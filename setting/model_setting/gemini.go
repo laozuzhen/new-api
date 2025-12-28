@@ -13,6 +13,7 @@ type GeminiSettings struct {
 	ThinkingAdapterBudgetTokensPercentage float64           `json:"thinking_adapter_budget_tokens_percentage"`
 	FunctionCallThoughtSignatureEnabled   bool              `json:"function_call_thought_signature_enabled"`
 	RemoveFunctionResponseIdEnabled       bool              `json:"remove_function_response_id_enabled"`
+	FileUriPassthroughEnabled             bool              `json:"file_uri_passthrough_enabled"` // 启用后直接透传 URL 给 Gemini，不下载转 base64
 }
 
 // 默认配置
@@ -32,6 +33,7 @@ var defaultGeminiSettings = GeminiSettings{
 	ThinkingAdapterBudgetTokensPercentage: 0.6,
 	FunctionCallThoughtSignatureEnabled:   true,
 	RemoveFunctionResponseIdEnabled:       true,
+	FileUriPassthroughEnabled:             false, // 默认关闭，需要手动开启
 }
 
 // 全局实例

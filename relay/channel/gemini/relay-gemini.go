@@ -525,24 +525,37 @@ func CovertOpenAI2Gemini(c *gin.Context, textRequest dto.GeneralOpenAIRequest, i
 				}
 				// 判断是否是url
 				if strings.HasPrefix(part.GetImageMedia().Url, "http") {
-					// 是url，获取文件的类型和base64编码的数据
-					fileData, err := service.GetFileBase64FromUrl(c, part.GetImageMedia().Url, "formatting image for Gemini")
-					if err != nil {
-						return nil, fmt.Errorf("get file base64 from url '%s' failed: %w", part.GetImageMedia().Url, err)
-					}
+					// 检查是否启用 URL 透传模式 (使用 fileData.fileUri 而不是下载转 base64)
+					if model_setting.GetGeminiSettings().FileUriPassthroughEnabled {
+						// 直接使用 fileData 透传 URL 给 Gemini
+						// 根据 URL 后缀推断 MIME 类型
+						mimeType := inferMimeTypeFromUrl(part.GetImageMedia().Url)
+						parts = append(parts, dto.GeminiPart{
+							FileData: &dto.GeminiFileData{
+								MimeType: mimeType,
+								FileUri:  part.GetImageMedia().Url,
+							},
+						})
+					} else {
+						// 原有逻辑：下载文件并转为 base64
+						fileData, err := service.GetFileBase64FromUrl(c, part.GetImageMedia().Url, "formatting image for Gemini")
+						if err != nil {
+							return nil, fmt.Errorf("get file base64 from url '%s' failed: %w", part.GetImageMedia().Url, err)
+						}
 
-					// 校验 MimeType 是否在 Gemini 支持的白名单中
-					if _, ok := geminiSupportedMimeTypes[strings.ToLower(fileData.MimeType)]; !ok {
-						url := part.GetImageMedia().Url
-						return nil, fmt.Errorf("mime type is not supported by Gemini: '%s', url: '%s', supported types are: %v", fileData.MimeType, url, getSupportedMimeTypesList())
-					}
+						// 校验 MimeType 是否在 Gemini 支持的白名单中
+						if _, ok := geminiSupportedMimeTypes[strings.ToLower(fileData.MimeType)]; !ok {
+							url := part.GetImageMedia().Url
+							return nil, fmt.Errorf("mime type is not supported by Gemini: '%s', url: '%s', supported types are: %v", fileData.MimeType, url, getSupportedMimeTypesList())
+						}
 
-					parts = append(parts, dto.GeminiPart{
-						InlineData: &dto.GeminiInlineData{
-							MimeType: fileData.MimeType, // 使用原始的 MimeType，因为大小写可能对API有意义
-							Data:     fileData.Base64Data,
-						},
-					})
+						parts = append(parts, dto.GeminiPart{
+							InlineData: &dto.GeminiInlineData{
+								MimeType: fileData.MimeType,
+								Data:     fileData.Base64Data,
+							},
+						})
+					}
 				} else {
 					format, base64String, err := service.DecodeBase64FileData(part.GetImageMedia().Url)
 					if err != nil {
@@ -650,6 +663,78 @@ func getSupportedMimeTypesList() []string {
 		keys = append(keys, k)
 	}
 	return keys
+}
+
+// inferMimeTypeFromUrl 根据 URL 后缀推断 MIME 类型
+func inferMimeTypeFromUrl(url string) string {
+	// 移除查询参数
+	urlPath := url
+	if idx := strings.Index(url, "?"); idx != -1 {
+		urlPath = url[:idx]
+	}
+	urlLower := strings.ToLower(urlPath)
+
+	// 图片类型
+	if strings.HasSuffix(urlLower, ".jpg") || strings.HasSuffix(urlLower, ".jpeg") {
+		return "image/jpeg"
+	}
+	if strings.HasSuffix(urlLower, ".png") {
+		return "image/png"
+	}
+	if strings.HasSuffix(urlLower, ".gif") {
+		return "image/gif"
+	}
+	if strings.HasSuffix(urlLower, ".webp") {
+		return "image/webp"
+	}
+	if strings.HasSuffix(urlLower, ".bmp") {
+		return "image/bmp"
+	}
+
+	// 视频类型
+	if strings.HasSuffix(urlLower, ".mp4") {
+		return "video/mp4"
+	}
+	if strings.HasSuffix(urlLower, ".mov") {
+		return "video/mov"
+	}
+	if strings.HasSuffix(urlLower, ".avi") {
+		return "video/avi"
+	}
+	if strings.HasSuffix(urlLower, ".wmv") {
+		return "video/wmv"
+	}
+	if strings.HasSuffix(urlLower, ".flv") {
+		return "video/flv"
+	}
+	if strings.HasSuffix(urlLower, ".mpeg") || strings.HasSuffix(urlLower, ".mpg") {
+		return "video/mpeg"
+	}
+	if strings.HasSuffix(urlLower, ".webm") {
+		return "video/webm"
+	}
+
+	// 音频类型
+	if strings.HasSuffix(urlLower, ".mp3") {
+		return "audio/mp3"
+	}
+	if strings.HasSuffix(urlLower, ".wav") {
+		return "audio/wav"
+	}
+	if strings.HasSuffix(urlLower, ".ogg") {
+		return "audio/ogg"
+	}
+	if strings.HasSuffix(urlLower, ".flac") {
+		return "audio/flac"
+	}
+
+	// PDF
+	if strings.HasSuffix(urlLower, ".pdf") {
+		return "application/pdf"
+	}
+
+	// 默认返回通用类型，让 Gemini 自己判断
+	return "application/octet-stream"
 }
 
 // cleanFunctionParameters recursively removes unsupported fields from Gemini function parameters.
