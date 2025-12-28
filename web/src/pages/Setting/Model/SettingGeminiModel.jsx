@@ -47,6 +47,7 @@ const DEFAULT_GEMINI_INPUTS = {
   'gemini.thinking_adapter_budget_tokens_percentage': 0.6,
   'gemini.function_call_thought_signature_enabled': true,
   'gemini.remove_function_response_id_enabled': true,
+  'gemini.file_uri_passthrough_enabled': false,
 };
 
 export default function SettingGeminiModel(props) {
@@ -199,6 +200,23 @@ export default function SettingGeminiModel(props) {
                     setInputs({
                       ...inputs,
                       'gemini.remove_function_response_id_enabled': value,
+                    })
+                  }
+                />
+              </Col>
+            </Row>
+            <Row>
+              <Col span={16}>
+                <Form.Switch
+                  label={t('启用URL透传模式')}
+                  field={'gemini.file_uri_passthrough_enabled'}
+                  extraText={t(
+                    '开启后直接将图片/视频URL透传给Gemini，不下载转base64。注意：仅支持Google Cloud Storage、YouTube等特定来源的URL',
+                  )}
+                  onChange={(value) =>
+                    setInputs({
+                      ...inputs,
+                      'gemini.file_uri_passthrough_enabled': value,
                     })
                   }
                 />
