@@ -89,11 +89,21 @@ export const useSecureVerification = ({
       // 检查验证方式
       const methods = await checkVerificationMethods();
 
+      // [MODIFIED] 跳过两步验证检查，允许直接查看密钥
       if (!methods.has2FA && !methods.hasPasskey) {
-        const errorMessage = t('您需要先启用两步验证或 Passkey 才能执行此操作');
-        showError(errorMessage);
-        onError?.(new Error(errorMessage));
-        return false;
+        // 直接执行 API 调用，不需要验证
+        try {
+          const result = await apiCall();
+          if (successMessage) {
+            showSuccess(successMessage);
+          }
+          onSuccess?.(result, null);
+          return true;
+        } catch (error) {
+          showError(error.message || t('操作失败'));
+          onError?.(error);
+          return false;
+        }
       }
 
       // 设置默认验证方式
