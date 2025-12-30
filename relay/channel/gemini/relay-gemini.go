@@ -356,6 +356,35 @@ func CovertOpenAI2Gemini(c *gin.Context, textRequest dto.GeneralOpenAIRequest, i
 			})
 		}
 		geminiRequest.SetTools(geminiTools)
+
+		// 处理 tool_choice 参数，转换为 Gemini 的 toolConfig.functionCallingConfig
+		if textRequest.ToolChoice != nil {
+			toolConfig := &dto.ToolConfig{
+				FunctionCallingConfig: &dto.FunctionCallingConfig{},
+			}
+			switch v := textRequest.ToolChoice.(type) {
+			case string:
+				switch v {
+				case "auto":
+					toolConfig.FunctionCallingConfig.Mode = "AUTO"
+				case "none":
+					toolConfig.FunctionCallingConfig.Mode = "NONE"
+				case "required":
+					toolConfig.FunctionCallingConfig.Mode = "ANY"
+				}
+			case map[string]interface{}:
+				// 处理指定函数名的情况: {"type": "function", "function": {"name": "xxx"}}
+				if function, ok := v["function"].(map[string]interface{}); ok {
+					if name, ok := function["name"].(string); ok {
+						toolConfig.FunctionCallingConfig.Mode = "ANY"
+						toolConfig.FunctionCallingConfig.AllowedFunctionNames = []string{name}
+					}
+				}
+			}
+			if toolConfig.FunctionCallingConfig.Mode != "" {
+				geminiRequest.ToolConfig = toolConfig
+			}
+		}
 	}
 
 	if textRequest.ResponseFormat != nil && (textRequest.ResponseFormat.Type == "json_schema" || textRequest.ResponseFormat.Type == "json_object") {
