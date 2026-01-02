@@ -20,3 +20,9 @@ var TaskQueryLimit int
 
 // temporary variable for sora patch, will be removed in future
 var TaskPricePatches []string
+
+// 外部用户验证配置 (用于前端 VIP 系统)
+var ExternalUserRedisURL string
+var ExternalUserRedisToken string
+var ExternalUserJWTSecret string
+var ExternalUserMonthlyQuota int

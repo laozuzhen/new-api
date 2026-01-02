@@ -11,6 +11,14 @@ import (
 )
 
 func SetRelayRouter(router *gin.Engine) {
+	// 初始化外部用户验证
+	middleware.InitExternalUserAuth(
+		constant.ExternalUserRedisURL,
+		constant.ExternalUserRedisToken,
+		constant.ExternalUserJWTSecret,
+		constant.ExternalUserMonthlyQuota,
+	)
+
 	router.Use(middleware.CORS())
 	router.Use(middleware.DecompressRequestMiddleware())
 	router.Use(middleware.StatsMiddleware())
@@ -62,6 +70,7 @@ func SetRelayRouter(router *gin.Engine) {
 	}
 	relayV1Router := router.Group("/v1")
 	relayV1Router.Use(middleware.TokenAuth())
+	relayV1Router.Use(middleware.ExternalUserAuth()) // 外部用户验证 (VIP 配额检查)
 	relayV1Router.Use(middleware.ModelRequestRateLimit())
 	{
 		// WebSocket 路由（统一到 Relay）

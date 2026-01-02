@@ -148,4 +148,10 @@ func initConstantEnv() {
 		}
 		constant.TaskPricePatches = taskPricePatches
 	}
+
+	// 外部用户验证配置 (用于前端 VIP 系统)
+	constant.ExternalUserRedisURL = GetEnvOrDefaultString("EXTERNAL_USER_REDIS_URL", "")
+	constant.ExternalUserRedisToken = GetEnvOrDefaultString("EXTERNAL_USER_REDIS_TOKEN", "")
+	constant.ExternalUserJWTSecret = GetEnvOrDefaultString("EXTERNAL_USER_JWT_SECRET", "")
+	constant.ExternalUserMonthlyQuota = GetEnvOrDefault("EXTERNAL_USER_MONTHLY_QUOTA", 30)
 }
