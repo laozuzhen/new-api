@@ -128,11 +128,11 @@ export default function SettingsExternalUserAuth() {
               <br />
               需要在服务器环境变量中配置以下项目才能启用外部用户配额验证：
               <br />
-              • <code>UPSTASH_REDIS_REST_URL</code> - Upstash Redis REST URL
+              • <code>UPSTASH_REDIS_REST_URL</code> - Upstash Redis REST URL (必须)
               <br />
-              • <code>UPSTASH_REDIS_REST_TOKEN</code> - Upstash Redis REST Token
+              • <code>UPSTASH_REDIS_REST_TOKEN</code> - Upstash Redis REST Token (必须)
               <br />
-              • <code>EXTERNAL_USER_JWT_SECRET</code> - JWT 密钥 (需与前端一致)
+              • <code>EXTERNAL_USER_JWT_SECRET</code> - JWT 密钥 (可选，用于签名验证)
               <br />
               • <code>EXTERNAL_USER_MONTHLY_QUOTA</code> - 每月配额 (默认 30)
             </Text>

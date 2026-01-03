@@ -25,26 +25,16 @@ func GetExternalUserAuthStatus(c *gin.Context) {
 	// 检查 Redis 配置
 	status.RedisConfigured = constant.ExternalUserRedisURL != "" && constant.ExternalUserRedisToken != ""
 	
-	// 检查 JWT 配置
+	// 检查 JWT 配置 (可选，用于未来的签名验证)
 	status.JWTConfigured = constant.ExternalUserJWTSecret != ""
 	
-	// 判断是否启用
-	status.Enabled = status.RedisConfigured && status.JWTConfigured
+	// 只需要 Redis 配置即可启用
+	status.Enabled = status.RedisConfigured
 
 	// 设置禁用原因
 	if !status.Enabled {
-		reasons := []string{}
 		if !status.RedisConfigured {
-			reasons = append(reasons, "Redis 未配置 (EXTERNAL_USER_REDIS_URL 或 EXTERNAL_USER_REDIS_TOKEN)")
-		}
-		if !status.JWTConfigured {
-			reasons = append(reasons, "JWT 密钥未配置 (EXTERNAL_USER_JWT_SECRET)")
-		}
-		if len(reasons) > 0 {
-			status.DisabledReason = reasons[0]
-			if len(reasons) > 1 {
-				status.DisabledReason += "; " + reasons[1]
-			}
+			status.DisabledReason = "Redis 未配置 (UPSTASH_REDIS_REST_URL 或 UPSTASH_REDIS_REST_TOKEN)"
 		}
 	}
 
