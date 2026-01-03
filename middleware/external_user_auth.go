@@ -63,7 +63,7 @@ func ExternalUserAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// Redis 未配置，拒绝所有请求
 		if !externalUserConfig.Enabled {
-			abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "服务未正确配置，请联系管理员")
+			abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "服务未正确配置，请联系管理员 (Redis 未配置)")
 			return
 		}
 
