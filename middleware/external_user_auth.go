@@ -61,17 +61,17 @@ type UserQuota struct {
 // ExternalUserAuth 外部用户验证中间件
 func ExternalUserAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 如果未启用外部用户验证，直接放行
+		// Redis 未配置，拒绝所有请求
 		if !externalUserConfig.Enabled {
-			c.Next()
+			abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "服务未正确配置，请联系管理员")
 			return
 		}
 
 		// 从 Header 获取外部用户 Token
 		externalToken := c.Request.Header.Get("X-External-User-Token")
 		if externalToken == "" {
-			// 没有外部用户 token，可能是使用 new-api 自己的 token，放行
-			c.Next()
+			// 没有外部用户 token，拒绝请求
+			abortWithOpenAiMessage(c, http.StatusUnauthorized, "请先登录后再使用 API")
 			return
 		}
 
@@ -196,7 +196,8 @@ func getUserFromRedis(userId string) (*ExternalUserData, error) {
 		return nil, fmt.Errorf("Redis 未配置")
 	}
 
-	url := fmt.Sprintf("%s/get/user:%s", externalUserConfig.RedisURL, userId)
+	key := "user:" + userId
+	url := fmt.Sprintf("%s/get/%s", externalUserConfig.RedisURL, key)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
@@ -216,19 +217,34 @@ func getUserFromRedis(userId string) (*ExternalUserData, error) {
 	}
 
 	var result struct {
-		Result string `json:"result"`
+		Result interface{} `json:"result"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, err
 	}
 
-	if result.Result == "" {
+	if result.Result == nil {
 		return nil, fmt.Errorf("用户不存在")
 	}
 
+	// Upstash 可能返回 string 或 object
 	var userData ExternalUserData
-	if err := json.Unmarshal([]byte(result.Result), &userData); err != nil {
-		return nil, err
+	switch v := result.Result.(type) {
+	case string:
+		if v == "" {
+			return nil, fmt.Errorf("用户不存在")
+		}
+		if err := json.Unmarshal([]byte(v), &userData); err != nil {
+			return nil, err
+		}
+	case map[string]interface{}:
+		// 直接是 JSON object
+		jsonBytes, _ := json.Marshal(v)
+		if err := json.Unmarshal(jsonBytes, &userData); err != nil {
+			return nil, err
+		}
+	default:
+		return nil, fmt.Errorf("用户数据格式错误")
 	}
 
 	return &userData, nil
@@ -240,7 +256,9 @@ func getUserQuota(userId string) (*UserQuota, error) {
 		return &UserQuota{}, nil
 	}
 
-	url := fmt.Sprintf("%s/get/quota:%s", externalUserConfig.RedisURL, userId)
+	// Upstash REST API: GET /get/:key (key 需要 URL 编码)
+	key := "quota:" + userId
+	url := fmt.Sprintf("%s/get/%s", externalUserConfig.RedisURL, key)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
@@ -260,7 +278,7 @@ func getUserQuota(userId string) (*UserQuota, error) {
 	}
 
 	var result struct {
-		Result string `json:"result"`
+		Result interface{} `json:"result"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, err
@@ -270,8 +288,14 @@ func getUserQuota(userId string) (*UserQuota, error) {
 		MonthKey: time.Now().Format("2006-01"),
 	}
 
-	if result.Result != "" {
-		json.Unmarshal([]byte(result.Result), quota)
+	// Upstash 可能返回 string 或 null
+	if result.Result != nil {
+		switch v := result.Result.(type) {
+		case string:
+			if v != "" {
+				json.Unmarshal([]byte(v), quota)
+			}
+		}
 	}
 
 	return quota, nil
@@ -288,9 +312,12 @@ func saveUserQuota(userId string, quota *UserQuota) error {
 		return err
 	}
 
-	// Upstash Redis REST API: POST /set/:key/:value
-	url := fmt.Sprintf("%s/set/quota:%s", externalUserConfig.RedisURL, userId)
-	req, err := http.NewRequest("POST", url, bytes.NewReader(quotaJSON))
+	// Upstash Redis REST API: POST with body [command, args...]
+	// 使用 pipeline 方式: POST / with body ["SET", "key", "value"]
+	key := "quota:" + userId
+	cmdBody, _ := json.Marshal([]string{"SET", key, string(quotaJSON)})
+	
+	req, err := http.NewRequest("POST", externalUserConfig.RedisURL, bytes.NewReader(cmdBody))
 	if err != nil {
 		return err
 	}
