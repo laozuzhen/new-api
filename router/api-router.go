@@ -114,6 +114,9 @@ func SetApiRouter(router *gin.Engine) {
 				adminRoute.DELETE("/:id/2fa", controller.AdminDisable2FA)
 			}
 		}
+		// 外部用户验证状态 (管理员可查看)
+		apiRouter.GET("/external-user-auth/status", middleware.AdminAuth(), controller.GetExternalUserAuthStatus)
+
 		optionRoute := apiRouter.Group("/option")
 		optionRoute.Use(middleware.RootAuth())
 		{

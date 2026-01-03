@@ -26,6 +26,7 @@ import SettingsSensitiveWords from '../../pages/Setting/Operation/SettingsSensit
 import SettingsLog from '../../pages/Setting/Operation/SettingsLog';
 import SettingsMonitoring from '../../pages/Setting/Operation/SettingsMonitoring';
 import SettingsCreditLimit from '../../pages/Setting/Operation/SettingsCreditLimit';
+import SettingsExternalUserAuth from '../../pages/Setting/Operation/SettingsExternalUserAuth';
 import { API, showError, toBoolean } from '../../helpers';
 
 const OperationSetting = () => {
@@ -139,6 +140,10 @@ const OperationSetting = () => {
         {/* 额度设置 */}
         <Card style={{ marginTop: '10px' }}>
           <SettingsCreditLimit options={inputs} refresh={onRefresh} />
+        </Card>
+        {/* 外部用户配额验证 */}
+        <Card style={{ marginTop: '10px' }}>
+          <SettingsExternalUserAuth />
         </Card>
       </Spin>
     </>
