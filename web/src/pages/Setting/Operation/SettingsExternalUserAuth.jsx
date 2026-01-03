@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 
 import React, { useEffect, useState } from 'react';
-import { Card, Descriptions, Tag, Spin, Button, Typography, Banner } from '@douyinfe/semi-ui';
+import { Descriptions, Tag, Spin, Button, Typography, Banner } from '@douyinfe/semi-ui';
 import { IconRefresh, IconCheckCircle, IconCrossCircle, IconInfoCircle } from '@douyinfe/semi-icons';
 import { useTranslation } from 'react-i18next';
 import { API, showError } from '../../../helpers';
