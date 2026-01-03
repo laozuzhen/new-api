@@ -37,6 +37,12 @@ type Log struct {
 	Group            string `json:"group" gorm:"index"`
 	Ip               string `json:"ip" gorm:"index;default:''"`
 	Other            string `json:"other"`
+	// 外部用户配额相关字段
+	ExternalUserId     string `json:"external_user_id" gorm:"index;default:''"`
+	ExternalUserEmail  string `json:"external_user_email" gorm:"default:''"`
+	ExternalQuotaUsed  int    `json:"external_quota_used" gorm:"default:0"`
+	ExternalQuotaTotal int    `json:"external_quota_total" gorm:"default:0"`
+	ExternalQuotaVIP   bool   `json:"external_quota_vip" gorm:"default:false"`
 }
 
 // don't use iota, avoid change log type value
@@ -151,6 +157,12 @@ type RecordConsumeLogParams struct {
 	IsStream         bool                   `json:"is_stream"`
 	Group            string                 `json:"group"`
 	Other            map[string]interface{} `json:"other"`
+	// 外部用户配额相关参数
+	ExternalUserId     string `json:"external_user_id"`
+	ExternalUserEmail  string `json:"external_user_email"`
+	ExternalQuotaUsed  int    `json:"external_quota_used"`
+	ExternalQuotaTotal int    `json:"external_quota_total"`
+	ExternalQuotaVIP   bool   `json:"external_quota_vip"`
 }
 
 func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams) {
@@ -167,6 +179,40 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 			needRecordIp = true
 		}
 	}
+	
+	// 从 context 获取外部用户配额信息 (如果参数中没有提供)
+	externalUserId := params.ExternalUserId
+	externalUserEmail := params.ExternalUserEmail
+	externalQuotaUsed := params.ExternalQuotaUsed
+	externalQuotaTotal := params.ExternalQuotaTotal
+	externalQuotaVIP := params.ExternalQuotaVIP
+	
+	if externalUserId == "" {
+		if id, exists := c.Get("external_user_id"); exists {
+			externalUserId, _ = id.(string)
+		}
+	}
+	if externalUserEmail == "" {
+		if email, exists := c.Get("external_user_email"); exists {
+			externalUserEmail, _ = email.(string)
+		}
+	}
+	if externalQuotaUsed == 0 {
+		if used, exists := c.Get("external_user_quota_used"); exists {
+			externalQuotaUsed, _ = used.(int)
+		}
+	}
+	if externalQuotaTotal == 0 {
+		if total, exists := c.Get("external_user_quota_total"); exists {
+			externalQuotaTotal, _ = total.(int)
+		}
+	}
+	if !externalQuotaVIP {
+		if vip, exists := c.Get("external_user_vip"); exists {
+			externalQuotaVIP, _ = vip.(bool)
+		}
+	}
+	
 	log := &Log{
 		UserId:           userId,
 		Username:         username,
@@ -189,7 +235,12 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 			}
 			return ""
 		}(),
-		Other: otherStr,
+		Other:              otherStr,
+		ExternalUserId:     externalUserId,
+		ExternalUserEmail:  externalUserEmail,
+		ExternalQuotaUsed:  externalQuotaUsed,
+		ExternalQuotaTotal: externalQuotaTotal,
+		ExternalQuotaVIP:   externalQuotaVIP,
 	}
 	err := LOG_DB.Create(log).Error
 	if err != nil {

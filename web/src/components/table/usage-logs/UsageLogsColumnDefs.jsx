@@ -311,6 +311,55 @@ export const getLogsColumns = ({
         );
       },
     },
+    // 外部用户配额列
+    {
+      key: 'external_user',
+      title: t('外部用户'),
+      dataIndex: 'external_user_email',
+      render: (text, record, index) => {
+        if (!record.external_user_id && !record.external_user_email) {
+          return <></>;
+        }
+        return (
+          <Tooltip content={`ID: ${record.external_user_id || '-'}`}>
+            <Tag color='blue' shape='circle'>
+              {record.external_user_email || record.external_user_id || '-'}
+            </Tag>
+          </Tooltip>
+        );
+      },
+    },
+    // 配额扣取状态列
+    {
+      key: 'external_quota',
+      title: t('配额扣取'),
+      dataIndex: 'external_quota_used',
+      render: (text, record, index) => {
+        // 没有外部用户信息时不显示
+        if (!record.external_user_id && !record.external_user_email) {
+          return <></>;
+        }
+        // VIP 用户
+        if (record.external_quota_vip) {
+          return (
+            <Tag color='gold' shape='circle'>
+              ⭐ VIP
+            </Tag>
+          );
+        }
+        // 普通用户显示配额
+        const used = record.external_quota_used || 0;
+        const total = record.external_quota_total || 0;
+        const isSuccess = used > 0 && total > 0;
+        return (
+          <Tooltip content={`${t('已用')}: ${used} / ${t('总计')}: ${total}`}>
+            <Tag color={isSuccess ? 'green' : 'red'} shape='circle'>
+              {isSuccess ? '✓' : '✗'} {used}/{total}
+            </Tag>
+          </Tooltip>
+        );
+      },
+    },
     {
       key: COLUMN_KEYS.TOKEN,
       title: t('令牌'),
