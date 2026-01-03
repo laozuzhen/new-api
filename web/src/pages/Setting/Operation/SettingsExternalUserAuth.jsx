@@ -48,6 +48,7 @@ export default function SettingsExternalUserAuth() {
 
   useEffect(() => {
     fetchStatus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const renderStatusTag = (enabled, trueText = '已配置', falseText = '未配置') => {
