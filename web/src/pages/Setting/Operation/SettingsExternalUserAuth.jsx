@@ -19,7 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 
 import React, { useEffect, useState } from 'react';
 import { Descriptions, Tag, Spin, Button, Typography, Banner } from '@douyinfe/semi-ui';
-import { IconRefresh, IconCheckCircle, IconCrossCircle, IconInfoCircle } from '@douyinfe/semi-icons';
+import { IconRefresh, IconCheckCircleStroked, IconClose, IconInfoCircle } from '@douyinfe/semi-icons';
 import { useTranslation } from 'react-i18next';
 import { API, showError } from '../../../helpers';
 
@@ -53,9 +53,9 @@ export default function SettingsExternalUserAuth() {
 
   const renderStatusTag = (enabled, trueText = '已配置', falseText = '未配置') => {
     return enabled ? (
-      <Tag color="green" prefixIcon={<IconCheckCircle />}>{trueText}</Tag>
+      <Tag color="green" prefixIcon={<IconCheckCircleStroked />}>{trueText}</Tag>
     ) : (
-      <Tag color="red" prefixIcon={<IconCrossCircle />}>{falseText}</Tag>
+      <Tag color="red" prefixIcon={<IconClose />}>{falseText}</Tag>
     );
   };
 
@@ -96,11 +96,11 @@ export default function SettingsExternalUserAuth() {
               {
                 key: '系统状态',
                 value: status.enabled ? (
-                  <Tag color="green" size="large" prefixIcon={<IconCheckCircle />}>
+                  <Tag color="green" size="large" prefixIcon={<IconCheckCircleStroked />}>
                     已启用 - 配额扣减生效中
                   </Tag>
                 ) : (
-                  <Tag color="red" size="large" prefixIcon={<IconCrossCircle />}>
+                  <Tag color="red" size="large" prefixIcon={<IconClose />}>
                     未启用 - 配额扣减不生效
                   </Tag>
                 ),
