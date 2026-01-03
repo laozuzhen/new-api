@@ -150,8 +150,9 @@ func initConstantEnv() {
 	}
 
 	// 外部用户验证配置 (用于前端 VIP 系统)
-	constant.ExternalUserRedisURL = GetEnvOrDefaultString("EXTERNAL_USER_REDIS_URL", "")
-	constant.ExternalUserRedisToken = GetEnvOrDefaultString("EXTERNAL_USER_REDIS_TOKEN", "")
+	// 优先使用 UPSTASH_REDIS_REST_URL/TOKEN，兼容 EXTERNAL_USER_REDIS_URL/TOKEN
+	constant.ExternalUserRedisURL = GetEnvOrDefaultString("UPSTASH_REDIS_REST_URL", GetEnvOrDefaultString("EXTERNAL_USER_REDIS_URL", ""))
+	constant.ExternalUserRedisToken = GetEnvOrDefaultString("UPSTASH_REDIS_REST_TOKEN", GetEnvOrDefaultString("EXTERNAL_USER_REDIS_TOKEN", ""))
 	constant.ExternalUserJWTSecret = GetEnvOrDefaultString("EXTERNAL_USER_JWT_SECRET", "")
 	constant.ExternalUserMonthlyQuota = GetEnvOrDefault("EXTERNAL_USER_MONTHLY_QUOTA", 30)
 }
