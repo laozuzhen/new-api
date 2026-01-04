@@ -313,7 +313,7 @@ export const getLogsColumns = ({
     },
     // 外部用户配额列
     {
-      key: 'external_user',
+      key: COLUMN_KEYS.EXTERNAL_USER,
       title: t('外部用户'),
       dataIndex: 'external_user_email',
       render: (text, record, index) => {
@@ -331,7 +331,7 @@ export const getLogsColumns = ({
     },
     // 配额扣取状态列
     {
-      key: 'external_quota',
+      key: COLUMN_KEYS.EXTERNAL_QUOTA,
       title: t('配额扣取'),
       dataIndex: 'external_quota_used',
       render: (text, record, index) => {
