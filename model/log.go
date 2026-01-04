@@ -38,11 +38,13 @@ type Log struct {
 	Ip               string `json:"ip" gorm:"index;default:''"`
 	Other            string `json:"other"`
 	// 外部用户配额相关字段
-	ExternalUserId     string `json:"external_user_id" gorm:"index;default:''"`
-	ExternalUserEmail  string `json:"external_user_email" gorm:"default:''"`
-	ExternalQuotaUsed  int    `json:"external_quota_used" gorm:"default:0"`
-	ExternalQuotaTotal int    `json:"external_quota_total" gorm:"default:0"`
-	ExternalQuotaVIP   bool   `json:"external_quota_vip" gorm:"default:false"`
+	ExternalUserId       string `json:"external_user_id" gorm:"index;default:''"`
+	ExternalUserEmail    string `json:"external_user_email" gorm:"default:''"`
+	ExternalQuotaUsed    int    `json:"external_quota_used" gorm:"default:0"`
+	ExternalQuotaTotal   int    `json:"external_quota_total" gorm:"default:0"`
+	ExternalQuotaVIP     bool   `json:"external_quota_vip" gorm:"default:false"`
+	ExternalQuotaSaved   bool   `json:"external_quota_saved" gorm:"default:false"`   // Redis 写入是否成功
+	ExternalQuotaError   string `json:"external_quota_error" gorm:"default:''"`      // Redis 写入错误信息
 }
 
 // don't use iota, avoid change log type value
@@ -163,6 +165,8 @@ type RecordConsumeLogParams struct {
 	ExternalQuotaUsed  int    `json:"external_quota_used"`
 	ExternalQuotaTotal int    `json:"external_quota_total"`
 	ExternalQuotaVIP   bool   `json:"external_quota_vip"`
+	ExternalQuotaSaved bool   `json:"external_quota_saved"` // Redis 写入是否成功
+	ExternalQuotaError string `json:"external_quota_error"` // Redis 写入错误信息
 }
 
 func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams) {
@@ -213,6 +217,18 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 		}
 	}
 	
+	// 获取 Redis 写入状态
+	externalQuotaSaved := params.ExternalQuotaSaved
+	externalQuotaError := params.ExternalQuotaError
+	if !externalQuotaSaved && externalQuotaError == "" {
+		if saved, exists := c.Get("external_quota_saved"); exists {
+			externalQuotaSaved, _ = saved.(bool)
+		}
+		if errMsg, exists := c.Get("external_quota_error"); exists {
+			externalQuotaError, _ = errMsg.(string)
+		}
+	}
+	
 	log := &Log{
 		UserId:           userId,
 		Username:         username,
@@ -241,6 +257,8 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 		ExternalQuotaUsed:  externalQuotaUsed,
 		ExternalQuotaTotal: externalQuotaTotal,
 		ExternalQuotaVIP:   externalQuotaVIP,
+		ExternalQuotaSaved: externalQuotaSaved,
+		ExternalQuotaError: externalQuotaError,
 	}
 	err := LOG_DB.Create(log).Error
 	if err != nil {

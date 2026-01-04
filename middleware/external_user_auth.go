@@ -146,11 +146,16 @@ func ExternalUserAuth() gin.HandlerFunc {
 		// 扣减配额
 		oldCount := quota.UsedCount
 		quota.UsedCount++
-		if err := saveUserQuota(userData.ID, quota); err != nil {
+		quotaSaveErr := saveUserQuota(userData.ID, quota)
+		if quotaSaveErr != nil {
 			// 保存失败不阻止请求，只记录日志
-			fmt.Printf("[ExternalUserAuth] ⚠️ 保存用户配额失败: %v\n", err)
+			fmt.Printf("[ExternalUserAuth] ⚠️ 保存用户配额失败: %v\n", quotaSaveErr)
+			c.Set("external_quota_saved", false)
+			c.Set("external_quota_error", quotaSaveErr.Error())
 		} else {
 			fmt.Printf("[ExternalUserAuth] ✓ 配额扣减成功: %d -> %d (总配额: %d)\n", oldCount, quota.UsedCount, externalUserConfig.MonthlyQuota)
+			c.Set("external_quota_saved", true)
+			c.Set("external_quota_error", "")
 		}
 
 		c.Set("external_user_id", userData.ID)

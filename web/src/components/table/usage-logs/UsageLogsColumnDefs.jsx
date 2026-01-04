@@ -350,11 +350,28 @@ export const getLogsColumns = ({
         // 普通用户显示配额
         const used = record.external_quota_used || 0;
         const total = record.external_quota_total || 0;
-        const isSuccess = used > 0 && total > 0;
+        const saved = record.external_quota_saved;
+        const saveError = record.external_quota_error;
+        
+        // 判断状态
+        let statusIcon = '✓';
+        let statusColor = 'green';
+        let tooltipContent = `${t('已用')}: ${used} / ${t('总计')}: ${total}`;
+        
+        if (saveError) {
+          statusIcon = '✗';
+          statusColor = 'red';
+          tooltipContent += `\n${t('Redis写入失败')}: ${saveError}`;
+        } else if (!saved && used > 0) {
+          statusIcon = '?';
+          statusColor = 'orange';
+          tooltipContent += `\n${t('Redis写入状态未知')}`;
+        }
+        
         return (
-          <Tooltip content={`${t('已用')}: ${used} / ${t('总计')}: ${total}`}>
-            <Tag color={isSuccess ? 'green' : 'red'} shape='circle'>
-              {isSuccess ? '✓' : '✗'} {used}/{total}
+          <Tooltip content={<div style={{ whiteSpace: 'pre-line' }}>{tooltipContent}</div>}>
+            <Tag color={statusColor} shape='circle'>
+              {statusIcon} {used}/{total}
             </Tag>
           </Tooltip>
         );
