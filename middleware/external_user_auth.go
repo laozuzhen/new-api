@@ -357,12 +357,12 @@ func getUserQuota(userId string) (*UserQuota, error) {
 // saveUserQuota 保存用户配额
 func saveUserQuota(userId string, quota *UserQuota) error {
 	if externalUserConfig.RedisURL == "" {
-		return nil
+		return fmt.Errorf("Redis URL 未配置")
 	}
 
 	quotaJSON, err := json.Marshal(quota)
 	if err != nil {
-		return err
+		return fmt.Errorf("序列化配额失败: %v", err)
 	}
 
 	// Upstash Redis REST API: POST with body [command, args...]
@@ -370,9 +370,11 @@ func saveUserQuota(userId string, quota *UserQuota) error {
 	key := "quota:" + userId
 	cmdBody, _ := json.Marshal([]string{"SET", key, string(quotaJSON)})
 	
+	fmt.Printf("[ExternalUserAuth] 保存配额到 Redis: key=%s, value=%s\n", key, string(quotaJSON))
+	
 	req, err := http.NewRequest("POST", externalUserConfig.RedisURL, bytes.NewReader(cmdBody))
 	if err != nil {
-		return err
+		return fmt.Errorf("创建请求失败: %v", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+externalUserConfig.RedisToken)
 	req.Header.Set("Content-Type", "application/json")
@@ -380,9 +382,17 @@ func saveUserQuota(userId string, quota *UserQuota) error {
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("Redis 请求失败: %v", err)
 	}
 	defer resp.Body.Close()
+
+	// 读取并检查响应
+	body, _ := io.ReadAll(resp.Body)
+	fmt.Printf("[ExternalUserAuth] Redis 响应: status=%d, body=%s\n", resp.StatusCode, string(body))
+	
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("Redis 返回错误: status=%d, body=%s", resp.StatusCode, string(body))
+	}
 
 	return nil
 }
