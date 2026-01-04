@@ -309,6 +309,7 @@ func getUserQuota(userId string) (*UserQuota, error) {
 
 	// Upstash REST API: GET /get/:key (key 需要 URL 编码)
 	key := "quota:" + userId
+	fmt.Printf("[ExternalUserAuth] 查询配额 key: %s\n", key)
 	url := fmt.Sprintf("%s/get/%s", externalUserConfig.RedisURL, key)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -327,6 +328,7 @@ func getUserQuota(userId string) (*UserQuota, error) {
 	if err != nil {
 		return nil, err
 	}
+	fmt.Printf("[ExternalUserAuth] Redis 返回: %s\n", string(body))
 
 	var result struct {
 		Result interface{} `json:"result"`
