@@ -120,6 +120,17 @@ func SetApiRouter(router *gin.Engine) {
 		}
 		// 外部用户验证状态 (管理员可查看)
 		apiRouter.GET("/external-user-auth/status", middleware.AdminAuth(), controller.GetExternalUserAuthStatus)
+		
+		// 外部用户管理 (管理员)
+		externalUserRoute := apiRouter.Group("/external-users")
+		externalUserRoute.Use(middleware.AdminAuth())
+		{
+			externalUserRoute.GET("/", controller.GetExternalUsers)
+			externalUserRoute.GET("/:userId", controller.GetExternalUserDetail)
+			externalUserRoute.PUT("/:userId/quota", controller.UpdateExternalUserQuota)
+			externalUserRoute.PUT("/:userId/vip", controller.UpdateExternalUserVIP)
+			externalUserRoute.POST("/batch-quota", controller.BatchUpdateQuota)
+		}
 
 		optionRoute := apiRouter.Group("/option")
 		optionRoute.Use(middleware.RootAuth())

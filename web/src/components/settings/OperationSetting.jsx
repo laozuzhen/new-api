@@ -27,6 +27,7 @@ import SettingsLog from '../../pages/Setting/Operation/SettingsLog';
 import SettingsMonitoring from '../../pages/Setting/Operation/SettingsMonitoring';
 import SettingsCreditLimit from '../../pages/Setting/Operation/SettingsCreditLimit';
 import SettingsExternalUserAuth from '../../pages/Setting/Operation/SettingsExternalUserAuth';
+import SettingsExternalUserManage from '../../pages/Setting/Operation/SettingsExternalUserManage';
 import SettingsCheckin from '../../pages/Setting/Operation/SettingsCheckin';
 import { API, showError, toBoolean } from '../../helpers';
 
@@ -152,6 +153,10 @@ const OperationSetting = () => {
         {/* 外部用户配额验证 */}
         <Card style={{ marginTop: '10px' }}>
           <SettingsExternalUserAuth />
+        </Card>
+        {/* 外部用户配额管理 */}
+        <Card style={{ marginTop: '10px' }}>
+          <SettingsExternalUserManage />
         </Card>
       </Spin>
     </>
