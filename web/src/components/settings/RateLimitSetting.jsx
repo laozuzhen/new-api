@@ -18,11 +18,12 @@ For commercial licensing, please contact support@quantumnous.com
 */
 
 import React, { useEffect, useState } from 'react';
-import { Card, Spin } from '@douyinfe/semi-ui';
+import { Card, Spin, Tabs, TabPane } from '@douyinfe/semi-ui';
 
 import { API, showError, toBoolean } from '../../helpers';
 import { useTranslation } from 'react-i18next';
 import RequestRateLimit from '../../pages/Setting/RateLimit/SettingsRequestRateLimit';
+import SettingsChannelRateLimit from '../../pages/Setting/Operation/SettingsChannelRateLimit';
 
 const RateLimitSetting = () => {
   const { t } = useTranslation();
@@ -77,10 +78,20 @@ const RateLimitSetting = () => {
   return (
     <>
       <Spin spinning={loading} size='large'>
-        {/* AI请求速率限制 */}
-        <Card style={{ marginTop: '10px' }}>
-          <RequestRateLimit options={inputs} refresh={onRefresh} />
-        </Card>
+        <Tabs type="line" defaultActiveKey="user">
+          <TabPane tab={t('用户速率限制')} itemKey="user">
+            {/* AI请求速率限制 */}
+            <Card style={{ marginTop: '10px' }}>
+              <RequestRateLimit options={inputs} refresh={onRefresh} />
+            </Card>
+          </TabPane>
+          <TabPane tab={t('渠道速率限制')} itemKey="channel">
+            {/* 渠道速率限制监控 */}
+            <Card style={{ marginTop: '10px' }}>
+              <SettingsChannelRateLimit />
+            </Card>
+          </TabPane>
+        </Tabs>
       </Spin>
     </>
   );

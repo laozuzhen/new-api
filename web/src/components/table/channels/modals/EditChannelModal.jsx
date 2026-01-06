@@ -153,6 +153,10 @@ const EditChannelModal = (props) => {
     pass_through_body_enabled: false,
     system_prompt: '',
     system_prompt_override: false,
+    // 速率限制设置
+    rate_limit_enabled: false,
+    rate_limit_rpm: 0,
+    rate_limit_rpd: 0,
     settings: '',
     // 仅 Vertex: 密钥格式（存入 settings.vertex_key_type）
     vertex_key_type: 'json',
@@ -560,6 +564,10 @@ const EditChannelModal = (props) => {
           data.system_prompt = parsedSettings.system_prompt || '';
           data.system_prompt_override =
             parsedSettings.system_prompt_override || false;
+          // 速率限制设置
+          data.rate_limit_enabled = parsedSettings.rate_limit_enabled || false;
+          data.rate_limit_rpm = parsedSettings.rate_limit_rpm || 0;
+          data.rate_limit_rpd = parsedSettings.rate_limit_rpd || 0;
         } catch (error) {
           console.error('解析渠道设置失败:', error);
           data.force_format = false;
@@ -568,6 +576,9 @@ const EditChannelModal = (props) => {
           data.pass_through_body_enabled = false;
           data.system_prompt = '';
           data.system_prompt_override = false;
+          data.rate_limit_enabled = false;
+          data.rate_limit_rpm = 0;
+          data.rate_limit_rpd = 0;
         }
       } else {
         data.force_format = false;
@@ -576,6 +587,9 @@ const EditChannelModal = (props) => {
         data.pass_through_body_enabled = false;
         data.system_prompt = '';
         data.system_prompt_override = false;
+        data.rate_limit_enabled = false;
+        data.rate_limit_rpm = 0;
+        data.rate_limit_rpd = 0;
       }
 
       if (data.settings) {
@@ -1210,6 +1224,10 @@ const EditChannelModal = (props) => {
       pass_through_body_enabled: localInputs.pass_through_body_enabled || false,
       system_prompt: localInputs.system_prompt || '',
       system_prompt_override: localInputs.system_prompt_override || false,
+      // 速率限制设置
+      rate_limit_enabled: localInputs.rate_limit_enabled || false,
+      rate_limit_rpm: localInputs.rate_limit_rpm || 0,
+      rate_limit_rpd: localInputs.rate_limit_rpd || 0,
     };
     localInputs.setting = JSON.stringify(channelExtraSettings);
 
@@ -3085,6 +3103,51 @@ const EditChannelModal = (props) => {
                         '如果用户请求中包含系统提示词，则使用此设置拼接到用户的系统提示词前面',
                       )}
                     />
+
+                    {/* 渠道速率限制设置 */}
+                    <div className='mt-4 pt-4 border-t border-gray-200'>
+                      <Text className='text-sm font-medium text-gray-700 mb-2 block'>
+                        {t('渠道速率限制')}
+                      </Text>
+                      <Form.Switch
+                        field='rate_limit_enabled'
+                        label={t('启用速率限制')}
+                        checkedText={t('开')}
+                        uncheckedText={t('关')}
+                        onChange={(value) =>
+                          handleChannelSettingsChange('rate_limit_enabled', value)
+                        }
+                        extraText={t('启用后将限制该渠道的请求频率')}
+                      />
+                      {inputs.rate_limit_enabled && (
+                        <Row gutter={16}>
+                          <Col span={12}>
+                            <Form.InputNumber
+                              field='rate_limit_rpm'
+                              label={t('每分钟请求数 (RPM)')}
+                              placeholder='0'
+                              min={0}
+                              onChange={(value) =>
+                                handleChannelSettingsChange('rate_limit_rpm', value || 0)
+                              }
+                              extraText={t('0 表示不限制')}
+                            />
+                          </Col>
+                          <Col span={12}>
+                            <Form.InputNumber
+                              field='rate_limit_rpd'
+                              label={t('每天请求数 (RPD)')}
+                              placeholder='0'
+                              min={0}
+                              onChange={(value) =>
+                                handleChannelSettingsChange('rate_limit_rpd', value || 0)
+                              }
+                              extraText={t('0 表示不限制')}
+                            />
+                          </Col>
+                        </Row>
+                      )}
+                    </div>
                   </Card>
                 </div>
               </div>

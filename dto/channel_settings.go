@@ -7,6 +7,10 @@ type ChannelSettings struct {
 	PassThroughBodyEnabled bool   `json:"pass_through_body_enabled,omitempty"`
 	SystemPrompt           string `json:"system_prompt,omitempty"`
 	SystemPromptOverride   bool   `json:"system_prompt_override,omitempty"`
+	// 渠道级别速率限制
+	RateLimitRPM           int    `json:"rate_limit_rpm,omitempty"`           // 每分钟请求数限制，0 表示不限制
+	RateLimitRPD           int    `json:"rate_limit_rpd,omitempty"`           // 每天请求数限制，0 表示不限制
+	RateLimitEnabled       bool   `json:"rate_limit_enabled,omitempty"`       // 是否启用速率限制
 }
 
 type VertexKeyType string

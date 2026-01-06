@@ -178,6 +178,10 @@ func SetApiRouter(router *gin.Engine) {
 			channelRoute.GET("/tag/models", controller.GetTagModels)
 			channelRoute.POST("/copy/:id", controller.CopyChannel)
 			channelRoute.POST("/multi_key/manage", controller.ManageMultiKeys)
+			// 渠道速率限制
+			channelRoute.GET("/rate_limit", controller.GetAllChannelRateLimitInfo)
+			channelRoute.GET("/rate_limit/:id", controller.GetChannelRateLimitInfo)
+			channelRoute.POST("/rate_limit/:id/reset", controller.ResetChannelRateLimit)
 		}
 		tokenRoute := apiRouter.Group("/token")
 		tokenRoute.Use(middleware.UserAuth())
