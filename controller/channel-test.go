@@ -639,6 +639,64 @@ func TestAllChannels(c *gin.Context) {
 
 var autoTestChannelsOnce sync.Once
 
+// testDisabledChannels 只测试被禁用的渠道，测试通过则恢复
+func testDisabledChannels() error {
+	testAllChannelsLock.Lock()
+	if testAllChannelsRunning {
+		testAllChannelsLock.Unlock()
+		return errors.New("测试已在运行中")
+	}
+	testAllChannelsRunning = true
+	testAllChannelsLock.Unlock()
+
+	channels, getChannelErr := model.GetAllChannels(0, 0, true, false)
+	if getChannelErr != nil {
+		testAllChannelsLock.Lock()
+		testAllChannelsRunning = false
+		testAllChannelsLock.Unlock()
+		return getChannelErr
+	}
+
+	gopool.Go(func() {
+		defer func() {
+			testAllChannelsLock.Lock()
+			testAllChannelsRunning = false
+			testAllChannelsLock.Unlock()
+		}()
+
+		disabledCount := 0
+		enabledCount := 0
+
+		for _, channel := range channels {
+			// 只测试被自动禁用的渠道
+			if channel.Status != common.ChannelStatusAutoDisabled {
+				continue
+			}
+			disabledCount++
+
+			tik := time.Now()
+			result := testChannel(channel, "", "")
+			tok := time.Now()
+			milliseconds := tok.Sub(tik).Milliseconds()
+
+			// 检查是否应该恢复渠道
+			if service.ShouldEnableChannel(result.newAPIError, channel.Status) {
+				service.EnableChannel(channel.Id, common.GetContextKeyString(result.context, constant.ContextKeyChannelKey), channel.Name)
+				common.SysLog(fmt.Sprintf("渠道 #%d (%s) 测试通过，已自动恢复", channel.Id, channel.Name))
+				enabledCount++
+			}
+
+			channel.UpdateResponseTime(milliseconds)
+			time.Sleep(common.RequestInterval)
+		}
+
+		if disabledCount > 0 {
+			common.SysLog(fmt.Sprintf("自动测试完成：共测试 %d 个禁用渠道，恢复 %d 个", disabledCount, enabledCount))
+		}
+	})
+	return nil
+}
+
 func AutomaticallyTestChannels() {
 	// 只在Master节点定时测试渠道
 	if !common.IsMasterNode {
@@ -653,10 +711,9 @@ func AutomaticallyTestChannels() {
 			for {
 				frequency := operation_setting.GetMonitorSetting().AutoTestChannelMinutes
 				time.Sleep(time.Duration(int(math.Round(frequency))) * time.Minute)
-				common.SysLog(fmt.Sprintf("automatically test channels with interval %f minutes", frequency))
-				common.SysLog("automatically testing all channels")
-				_ = testAllChannels(false)
-				common.SysLog("automatically channel test finished")
+				common.SysLog(fmt.Sprintf("automatically test disabled channels with interval %f minutes", frequency))
+				// 只测试禁用的渠道
+				_ = testDisabledChannels()
 				if !operation_setting.GetMonitorSetting().AutoTestChannelEnabled {
 					break
 				}
