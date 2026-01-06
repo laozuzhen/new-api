@@ -147,7 +147,13 @@ func getExternalUserInfo(userId string) (*ExternalUserInfo, error) {
 			user.MonthKey = quota.MonthKey
 		}
 	}
-	user.QuotaTotal = constant.ExternalUserMonthlyQuota
+	
+	// VIP 用户显示无限配额，普通用户显示月度配额
+	if user.IsVIP && user.VIPExpiresAt > time.Now().Unix() {
+		user.QuotaTotal = -1 // -1 表示无限
+	} else {
+		user.QuotaTotal = constant.ExternalUserMonthlyQuota
+	}
 
 	return &user, nil
 }

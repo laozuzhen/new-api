@@ -167,7 +167,20 @@ export default function SettingsExternalUserManage() {
       dataIndex: 'quotaUsed',
       width: 150,
       render: (used, record) => {
-        const total = record.quotaTotal || 30;
+        const total = record.quotaTotal;
+        const isVip = total === -1; // -1 表示无限（VIP）
+        
+        if (isVip) {
+          return (
+            <div>
+              <Tag color="gold">{used} / ∞</Tag>
+              <Text type="tertiary" size="small" style={{ marginLeft: 4 }}>
+                (VIP 无限)
+              </Text>
+            </div>
+          );
+        }
+        
         const percent = (used / total) * 100;
         const color = percent >= 100 ? 'red' : percent >= 80 ? 'orange' : 'green';
         return (
