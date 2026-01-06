@@ -282,45 +282,22 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 			AutoBan: &autoBanInt,
 		}, nil
 	}
-	
-	// 记录已尝试但超限的渠道，避免重复选择
-	rateLimitedChannels := make(map[int]bool)
-	maxRateLimitRetries := 10 // 最多尝试 10 次选择不同的渠道
-	
-	for i := 0; i < maxRateLimitRetries; i++ {
-		channel, selectGroup, err := service.CacheGetRandomSatisfiedChannel(retryParam)
+	channel, selectGroup, err := service.CacheGetRandomSatisfiedChannel(retryParam)
 
-		info.PriceData.GroupRatioInfo = helper.HandleGroupRatio(c, info)
+	info.PriceData.GroupRatioInfo = helper.HandleGroupRatio(c, info)
 
-		if err != nil {
-			return nil, types.NewError(fmt.Errorf("获取分组 %s 下模型 %s 的可用渠道失败（retry）: %s", selectGroup, info.OriginModelName, err.Error()), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
-		}
-		if channel == nil {
-			return nil, types.NewError(fmt.Errorf("分组 %s 下模型 %s 的可用渠道不存在（retry）", selectGroup, info.OriginModelName), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
-		}
-		
-		// 如果这个渠道已经因为速率限制被跳过，继续尝试下一个
-		if rateLimitedChannels[channel.Id] {
-			retryParam.IncreaseRetry()
-			continue
-		}
-
-		newAPIError := middleware.SetupContextForSelectedChannel(c, channel, info.OriginModelName)
-		if newAPIError != nil {
-			// 如果是速率限制错误，记录并尝试选择其他渠道
-			if newAPIError.GetErrorCode() == types.ErrorCodeRateLimitExceeded {
-				rateLimitedChannels[channel.Id] = true
-				logger.LogInfo(c, fmt.Sprintf("渠道 #%d 已达到速率限制，尝试选择其他渠道", channel.Id))
-				retryParam.IncreaseRetry()
-				continue
-			}
-			return nil, newAPIError
-		}
-		return channel, nil
+	if err != nil {
+		return nil, types.NewError(fmt.Errorf("获取分组 %s 下模型 %s 的可用渠道失败（retry）: %s", selectGroup, info.OriginModelName, err.Error()), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
 	}
-	
-	// 所有尝试都失败了
-	return nil, types.NewError(fmt.Errorf("所有可用渠道都已达到速率限制"), types.ErrorCodeRateLimitExceeded, types.ErrOptionWithSkipRetry())
+	if channel == nil {
+		return nil, types.NewError(fmt.Errorf("分组 %s 下模型 %s 的可用渠道不存在（retry）", selectGroup, info.OriginModelName), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
+	}
+
+	newAPIError := middleware.SetupContextForSelectedChannel(c, channel, info.OriginModelName)
+	if newAPIError != nil {
+		return nil, newAPIError
+	}
+	return channel, nil
 }
 
 func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) bool {
