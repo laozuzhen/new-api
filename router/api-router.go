@@ -180,8 +180,10 @@ func SetApiRouter(router *gin.Engine) {
 			channelRoute.POST("/multi_key/manage", controller.ManageMultiKeys)
 			// 渠道速率限制
 			channelRoute.GET("/rate_limit", controller.GetAllChannelRateLimitInfo)
+			channelRoute.GET("/rate_limit/channels", controller.GetAllChannelsForBatchRateLimit)
 			channelRoute.GET("/rate_limit/:id", controller.GetChannelRateLimitInfo)
 			channelRoute.POST("/rate_limit/:id/reset", controller.ResetChannelRateLimit)
+			channelRoute.POST("/rate_limit/batch", controller.BatchSetChannelRateLimit)
 		}
 		tokenRoute := apiRouter.Group("/token")
 		tokenRoute.Use(middleware.UserAuth())

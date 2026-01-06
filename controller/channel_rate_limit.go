@@ -148,6 +148,108 @@ func GetAllChannelRateLimitInfo(c *gin.Context) {
 	})
 }
 
+// GetAllChannelsForBatchRateLimit 获取所有渠道列表（用于批量设置速率限制）
+func GetAllChannelsForBatchRateLimit(c *gin.Context) {
+	channels, err := model.GetAllChannels(0, 0, true, false)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": "获取渠道列表失败",
+		})
+		return
+	}
+
+	type ChannelSimple struct {
+		ID               int    `json:"id"`
+		Name             string `json:"name"`
+		RateLimitEnabled bool   `json:"rate_limit_enabled"`
+		RateLimitRPM     int    `json:"rate_limit_rpm"`
+		RateLimitRPD     int    `json:"rate_limit_rpd"`
+	}
+
+	var result []ChannelSimple
+	for _, channel := range channels {
+		setting := channel.GetSetting()
+		result = append(result, ChannelSimple{
+			ID:               channel.Id,
+			Name:             channel.Name,
+			RateLimitEnabled: setting.RateLimitEnabled,
+			RateLimitRPM:     setting.RateLimitRPM,
+			RateLimitRPD:     setting.RateLimitRPD,
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    result,
+	})
+}
+
+// BatchSetChannelRateLimit 批量设置渠道速率限制
+func BatchSetChannelRateLimit(c *gin.Context) {
+	var req struct {
+		Ids              []int `json:"ids" binding:"required"`
+		RateLimitRPM     int   `json:"rate_limit_rpm"`
+		RateLimitRPD     int   `json:"rate_limit_rpd"`
+		RateLimitEnabled *bool `json:"rate_limit_enabled"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "参数错误: " + err.Error(),
+		})
+		return
+	}
+
+	if len(req.Ids) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "请选择要设置的渠道",
+		})
+		return
+	}
+
+	// 获取所有渠道
+	channels, err := model.GetChannelsByIds(req.Ids)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": "获取渠道失败: " + err.Error(),
+		})
+		return
+	}
+
+	successCount := 0
+	for _, channel := range channels {
+		setting := channel.GetSetting()
+
+		// 更新速率限制设置
+		if req.RateLimitRPM >= 0 {
+			setting.RateLimitRPM = req.RateLimitRPM
+		}
+		if req.RateLimitRPD >= 0 {
+			setting.RateLimitRPD = req.RateLimitRPD
+		}
+		if req.RateLimitEnabled != nil {
+			setting.RateLimitEnabled = *req.RateLimitEnabled
+		}
+
+		// 保存设置
+		channel.SetSetting(setting)
+		if err := channel.Save(); err != nil {
+			continue
+		}
+		successCount++
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "成功更新 " + strconv.Itoa(successCount) + " 个渠道",
+		"data":    successCount,
+	})
+}
+
 // ResetChannelRateLimit 重置渠道速率限制计数
 func ResetChannelRateLimit(c *gin.Context) {
 	channelIdStr := c.Param("id")
