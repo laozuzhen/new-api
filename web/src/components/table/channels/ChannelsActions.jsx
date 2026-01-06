@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 
-import React from 'react';
+import React, { useState } from 'react';
 import {
   Button,
   Dropdown,
@@ -25,8 +25,11 @@ import {
   Switch,
   Typography,
   Select,
+  Form,
+  InputNumber,
 } from '@douyinfe/semi-ui';
 import CompactModeToggle from '../../common/ui/CompactModeToggle';
+import { API, showError, showSuccess } from '../../../helpers';
 
 const ChannelsActions = ({
   enableBatchDelete,
@@ -52,8 +55,49 @@ const ChannelsActions = ({
   activePage,
   pageSize,
   setActivePage,
+  selectedChannels,
   t,
 }) => {
+  // 批量设置速率限制相关状态
+  const [showRateLimitModal, setShowRateLimitModal] = useState(false);
+  const [rateLimitForm, setRateLimitForm] = useState({
+    rate_limit_enabled: true,
+    rate_limit_rpm: 20,
+    rate_limit_rpd: 100
+  });
+  const [rateLimitLoading, setRateLimitLoading] = useState(false);
+
+  // 批量设置速率限制
+  const handleBatchSetRateLimit = async () => {
+    const channels = selectedChannels || [];
+    if (channels.length === 0) {
+      showError(t('请先选择要设置的渠道'));
+      return;
+    }
+    
+    const ids = channels.map(ch => ch.id);
+    
+    setRateLimitLoading(true);
+    try {
+      const res = await API.post('/api/channel/rate_limit/batch', {
+        ids: ids,
+        rate_limit_enabled: rateLimitForm.rate_limit_enabled,
+        rate_limit_rpm: rateLimitForm.rate_limit_rpm,
+        rate_limit_rpd: rateLimitForm.rate_limit_rpd
+      });
+      
+      if (res.data.success) {
+        showSuccess(res.data.message || t('批量设置成功'));
+        setShowRateLimitModal(false);
+      } else {
+        showError(res.data.message || t('批量设置失败'));
+      }
+    } catch (error) {
+      showError(t('批量设置失败') + ': ' + error.message);
+    } finally {
+      setRateLimitLoading(false);
+    }
+  };
   return (
     <div className='flex flex-col gap-2'>
       {/* 第一行：批量操作按钮 + 设置开关 */}
@@ -162,6 +206,17 @@ const ChannelsActions = ({
                     }}
                   >
                     {t('删除禁用通道')}
+                  </Button>
+                </Dropdown.Item>
+                <Dropdown.Item>
+                  <Button
+                    size='small'
+                    type='tertiary'
+                    className='w-full'
+                    disabled={!enableBatchDelete || !selectedChannels?.length}
+                    onClick={() => setShowRateLimitModal(true)}
+                  >
+                    {t('批量设置速率限制')}
                   </Button>
                 </Dropdown.Item>
               </Dropdown.Menu>
@@ -276,6 +331,58 @@ const ChannelsActions = ({
           </div>
         </div>
       </div>
+
+      {/* 批量设置速率限制 Modal */}
+      <Modal
+        title={t('批量设置速率限制')}
+        visible={showRateLimitModal}
+        onCancel={() => setShowRateLimitModal(false)}
+        onOk={handleBatchSetRateLimit}
+        okText={t('确定')}
+        cancelText={t('取消')}
+        confirmLoading={rateLimitLoading}
+        width={500}
+      >
+        <div style={{ marginBottom: 16 }}>
+          <Typography.Text type="tertiary">
+            {t('已选择')} {selectedChannels?.length || 0} {t('个渠道')}
+          </Typography.Text>
+        </div>
+        <Form layout="vertical">
+          <Form.Slot label={t('启用速率限制')}>
+            <Switch
+              checked={rateLimitForm.rate_limit_enabled}
+              onChange={(checked) => setRateLimitForm(prev => ({ ...prev, rate_limit_enabled: checked }))}
+            />
+          </Form.Slot>
+          
+          <Form.Slot label={t('每分钟请求限制 (RPM)')}>
+            <InputNumber
+              style={{ width: '100%' }}
+              value={rateLimitForm.rate_limit_rpm}
+              onChange={(value) => setRateLimitForm(prev => ({ ...prev, rate_limit_rpm: value || 0 }))}
+              min={0}
+              placeholder={t('0 表示不限制')}
+            />
+            <Typography.Text type="tertiary" size="small">
+              {t('Gemini 免费 API 通常限制为 15-20 RPM')}
+            </Typography.Text>
+          </Form.Slot>
+          
+          <Form.Slot label={t('每天请求限制 (RPD)')}>
+            <InputNumber
+              style={{ width: '100%' }}
+              value={rateLimitForm.rate_limit_rpd}
+              onChange={(value) => setRateLimitForm(prev => ({ ...prev, rate_limit_rpd: value || 0 }))}
+              min={0}
+              placeholder={t('0 表示不限制')}
+            />
+            <Typography.Text type="tertiary" size="small">
+              {t('Gemini 免费 API 通常限制为 1500 RPD')}
+            </Typography.Text>
+          </Form.Slot>
+        </Form>
+      </Modal>
     </div>
   );
 };
