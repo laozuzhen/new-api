@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/constant"
-	"github.com/QuantumNous/new-api/middleware"
 	"github.com/gin-gonic/gin"
 )
 
@@ -66,8 +65,8 @@ func GetExternalUserAuthStatus(c *gin.Context) {
 		status.DiagEnvVars[envVar] = os.Getenv(envVar) != ""
 	}
 	
-	// 使用中间件的实际状态
-	status.Enabled = middleware.IsExternalUserEnabled()
+	// 使用 constant 包中的状态变量
+	status.Enabled = constant.ExternalUserAuthEnabled
 
 	// 设置禁用原因
 	if !status.Enabled {

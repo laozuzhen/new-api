@@ -26,3 +26,4 @@ var ExternalUserRedisURL string
 var ExternalUserRedisToken string
 var ExternalUserJWTSecret string
 var ExternalUserMonthlyQuota int
+var ExternalUserAuthEnabled bool // 由 middleware 初始化时设置
