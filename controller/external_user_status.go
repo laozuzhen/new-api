@@ -3,8 +3,10 @@ package controller
 import (
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/middleware"
 	"github.com/gin-gonic/gin"
 )
 
@@ -12,6 +14,7 @@ import (
 type ExternalUserAuthStatus struct {
 	Enabled           bool   `json:"enabled"`
 	RedisConfigured   bool   `json:"redisConfigured"`
+	RedisType         string `json:"redisType"` // "local" 或 "upstash"
 	JWTConfigured     bool   `json:"jwtConfigured"`
 	MonthlyQuota      int    `json:"monthlyQuota"`
 	DisabledReason    string `json:"disabledReason,omitempty"`
@@ -30,9 +33,20 @@ func GetExternalUserAuthStatus(c *gin.Context) {
 	}
 
 	// 检查 Redis 配置
-	status.RedisConfigured = constant.ExternalUserRedisURL != "" && constant.ExternalUserRedisToken != ""
 	status.DiagRedisURLSet = constant.ExternalUserRedisURL != ""
 	status.DiagRedisTokenSet = constant.ExternalUserRedisToken != ""
+	
+	// 判断 Redis 类型和配置状态
+	// 本地 Redis (redis:// 开头) 不需要 Token
+	// Upstash REST API 需要 URL 和 Token
+	isLocalRedis := strings.HasPrefix(constant.ExternalUserRedisURL, "redis://")
+	if isLocalRedis {
+		status.RedisType = "local"
+		status.RedisConfigured = constant.ExternalUserRedisURL != ""
+	} else {
+		status.RedisType = "upstash"
+		status.RedisConfigured = constant.ExternalUserRedisURL != "" && constant.ExternalUserRedisToken != ""
+	}
 	
 	// 检查 JWT 配置 (可选，用于未来的签名验证)
 	status.JWTConfigured = constant.ExternalUserJWTSecret != ""
@@ -44,6 +58,7 @@ func GetExternalUserAuthStatus(c *gin.Context) {
 		"UPSTASH_REDIS_REST_TOKEN",
 		"EXTERNAL_USER_REDIS_URL",
 		"EXTERNAL_USER_REDIS_TOKEN",
+		"REDIS_CONN_STRING",
 		"EXTERNAL_USER_JWT_SECRET",
 		"EXTERNAL_USER_MONTHLY_QUOTA",
 	}
@@ -51,23 +66,17 @@ func GetExternalUserAuthStatus(c *gin.Context) {
 		status.DiagEnvVars[envVar] = os.Getenv(envVar) != ""
 	}
 	
-	// 只需要 Redis 配置即可启用
-	status.Enabled = status.RedisConfigured
+	// 使用中间件的实际状态
+	status.Enabled = middleware.IsExternalUserEnabled()
 
 	// 设置禁用原因
 	if !status.Enabled {
-		reasons := []string{}
 		if !status.DiagRedisURLSet {
-			reasons = append(reasons, "UPSTASH_REDIS_REST_URL 未设置")
-		}
-		if !status.DiagRedisTokenSet {
-			reasons = append(reasons, "UPSTASH_REDIS_REST_TOKEN 未设置")
-		}
-		if len(reasons) > 0 {
-			status.DisabledReason = "Redis 未配置: " + reasons[0]
-			if len(reasons) > 1 {
-				status.DisabledReason += " 和 " + reasons[1]
-			}
+			status.DisabledReason = "Redis 未配置: 请设置 REDIS_CONN_STRING (本地 Redis) 或 UPSTASH_REDIS_REST_URL/TOKEN"
+		} else if !isLocalRedis && !status.DiagRedisTokenSet {
+			status.DisabledReason = "Upstash Redis Token 未设置: 请设置 UPSTASH_REDIS_REST_TOKEN"
+		} else {
+			status.DisabledReason = "Redis 连接失败，请检查配置"
 		}
 	}
 
