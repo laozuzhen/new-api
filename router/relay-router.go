@@ -17,12 +17,14 @@ func SetRelayRouter(router *gin.Engine) {
 	fmt.Printf("[Router] constant.ExternalUserRedisURL = %s\n", constant.ExternalUserRedisURL)
 	
 	// 初始化外部用户验证
+	fmt.Println("[Router] 准备调用 InitExternalUserAuth")
 	middleware.InitExternalUserAuth(
 		constant.ExternalUserRedisURL,
 		constant.ExternalUserRedisToken,
 		constant.ExternalUserJWTSecret,
 		constant.ExternalUserMonthlyQuota,
 	)
+	fmt.Println("[Router] InitExternalUserAuth 调用完成")
 
 	router.Use(middleware.CORS())
 	router.Use(middleware.DecompressRequestMiddleware())
