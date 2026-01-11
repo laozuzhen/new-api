@@ -620,6 +620,84 @@ func saveQuotaToUpstash(userId string, quota *UserQuota) error {
 	return nil
 }
 
+// getChannelQuotaFromUpstash 从 Upstash 获取用户渠道配额
+func getChannelQuotaFromUpstash(userId string, channelId string) (*UserQuota, error) {
+	var key string
+	if channelId == "" {
+		key = "quota:" + userId
+	} else {
+		key = "quota:" + userId + ":channel:" + channelId
+	}
+	
+	url := fmt.Sprintf("%s/get/%s", externalUserConfig.RedisURL, key)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+externalUserConfig.RedisToken)
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var result struct {
+		Result interface{} `json:"result"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, err
+	}
+
+	quota := &UserQuota{MonthKey: time.Now().Format("2006-01")}
+	if result.Result != nil {
+		if v, ok := result.Result.(string); ok && v != "" {
+			json.Unmarshal([]byte(v), quota)
+		}
+	}
+
+	return quota, nil
+}
+
+// saveChannelQuotaToUpstash 保存用户渠道配额到 Upstash
+func saveChannelQuotaToUpstash(userId string, channelId string, quota *UserQuota) error {
+	quotaJSON, _ := json.Marshal(quota)
+	var key string
+	if channelId == "" {
+		key = "quota:" + userId
+	} else {
+		key = "quota:" + userId + ":channel:" + channelId
+	}
+	cmdBody, _ := json.Marshal([]string{"SET", key, string(quotaJSON)})
+
+	req, err := http.NewRequest("POST", externalUserConfig.RedisURL, bytes.NewReader(cmdBody))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+externalUserConfig.RedisToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("Redis 返回错误: %s", string(body))
+	}
+
+	return nil
+}
+
 func setUserToUpstash(userId string, userData *ExternalUserData) error {
 	userJSON, _ := json.Marshal(userData)
 	key := "user:" + userId
