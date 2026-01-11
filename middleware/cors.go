@@ -18,6 +18,7 @@ func CORS() gin.HandlerFunc {
 		"X-Quota-Total",
 		"X-Quota-Remaining",
 		"X-Quota-Reason",
+		"X-Channel-Id",
 	}
 	return cors.New(config)
 }

@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -11,16 +12,20 @@ import (
 	"strings"
 	"time"
 
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/gin-gonic/gin"
+	"github.com/go-redis/redis/v8"
 )
 
 // ExternalUserConfig 外部用户验证配置
 type ExternalUserConfig struct {
-	RedisURL      string // Upstash Redis REST URL
-	RedisToken    string // Upstash Redis REST Token
-	JWTSecret     string // JWT 密钥 (与前端一致)
-	MonthlyQuota  int    // 普通用户每月配额
-	Enabled       bool   // 是否启用外部用户验证
+	RedisURL      string        // Redis 连接 URL (支持本地 redis:// 和 Upstash)
+	RedisToken    string        // Upstash Redis REST Token (本地 Redis 不需
+	JWTSecret     string        // JWT 密钥 (与前端一致)
+	MonthlyQuota  int           // 普通用户每月配额
+	Enabled       bool          // 是否启用外部用户验证
+	redisClient   *redis.Client // go-redis 客户端 (本地 Redis)
+	useLocalRedis bool          // 是否使用本地 Redis
 }
 
 var externalUserConfig = ExternalUserConfig{
@@ -28,17 +33,51 @@ var externalUserConfig = ExternalUserConfig{
 	Enabled:      false,
 }
 
+var ctx = context.Background()
+
 // InitExternalUserAuth 初始化外部用户验证配置
 func InitExternalUserAuth(redisURL, redisToken, jwtSecret string, monthlyQuota int) {
+	fmt.Printf("[ExternalUserAuth] 初始化开始: URL=%s, Token长度=%d, Quota=%d\n", redisURL, len(redisToken), monthlyQuota)
+	
 	externalUserConfig.RedisURL = redisURL
 	externalUserConfig.RedisToken = redisToken
 	externalUserConfig.JWTSecret = jwtSecret
 	if monthlyQuota > 0 {
 		externalUserConfig.MonthlyQuota = monthlyQuota
 	}
-	externalUserConfig.Enabled = redisURL != "" && redisToken != ""
-	if externalUserConfig.Enabled {
-		fmt.Printf("[ExternalUserAuth] 已启用外部用户验证, Redis URL: %s, 每月配额: %d\n", redisURL, externalUserConfig.MonthlyQuota)
+
+	// 检测是否是本地 Redis (redis:// 开头)
+	if strings.HasPrefix(redisURL, "redis://") {
+		externalUserConfig.useLocalRedis = true
+		opt, err := redis.ParseURL(redisURL)
+		if err != nil {
+			fmt.Printf("[ExternalUserAuth] ❌ 解析 Redis URL 失败: %v\n", err)
+			externalUserConfig.Enabled = false
+			constant.ExternalUserAuthEnabled = false
+			return
+		}
+		externalUserConfig.redisClient = redis.NewClient(opt)
+		// 测试连接
+		_, err = externalUserConfig.redisClient.Ping(ctx).Result()
+		if err != nil {
+			fmt.Printf("[ExternalUserAuth] ❌ Redis 连接失败: %v\n", err)
+			externalUserConfig.Enabled = false
+			constant.ExternalUserAuthEnabled = false
+			return
+		}
+		externalUserConfig.Enabled = true
+		constant.ExternalUserAuthEnabled = true
+		fmt.Printf("[ExternalUserAuth] ✓ 已启用外部用户验证 (本地 Redis), URL: %s, 每月配额: %d\n", redisURL, externalUserConfig.MonthlyQuota)
+	} else if redisURL != "" && redisToken != "" {
+		// Upstash REST API
+		externalUserConfig.useLocalRedis = false
+		externalUserConfig.Enabled = true
+		constant.ExternalUserAuthEnabled = true
+		fmt.Printf("[ExternalUserAuth] ✓ 已启用外部用户验证 (Upstash), URL: %s, 每月配额: %d\n", redisURL, externalUserConfig.MonthlyQuota)
+	} else {
+		externalUserConfig.Enabled = false
+		constant.ExternalUserAuthEnabled = false
+		fmt.Printf("[ExternalUserAuth] ⚠️ 外部用户验证未启用 (Redis 未配置)\n")
 	}
 }
 
@@ -54,129 +93,154 @@ type ExternalUserData struct {
 // UserQuota 用户配额数据
 type UserQuota struct {
 	UsedCount   int    `json:"usedCount"`
-	MonthKey    string `json:"monthKey"` // 格式: "2024-01"
+	MonthKey    string `json:"monthKey"`
 	LastResetAt int64  `json:"lastResetAt"`
+}
+
+
+// ChannelQuotaConfig 渠道配额配置 (从前端传递)
+type ChannelQuotaConfig struct {
+	ChannelId    string `json:"channelId"`
+	ChannelName  string `json:"channelName"`
+	QuotaEnabled bool   `json:"quotaEnabled"`
+	QuotaLimit   int    `json:"quotaLimit"` // -1 表示无限制
 }
 
 // ExternalUserAuth 外部用户验证中间件
 func ExternalUserAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// [调试] 记录中间件执行
 		fmt.Printf("[ExternalUserAuth] ========== 开始处理请求 ==========\n")
 		fmt.Printf("[ExternalUserAuth] 请求路径: %s %s\n", c.Request.Method, c.Request.URL.Path)
-		fmt.Printf("[ExternalUserAuth] 配置状态: Enabled=%v, RedisURL=%s\n", externalUserConfig.Enabled, maskString(externalUserConfig.RedisURL, 20))
-		
-		// Redis 未配置，拒绝所有请求
+		fmt.Printf("[ExternalUserAuth] 配置状态: Enabled=%v, UseLocalRedis=%v, RedisURL=%s\n", externalUserConfig.Enabled, externalUserConfig.useLocalRedis, externalUserConfig.RedisURL)
+
 		if !externalUserConfig.Enabled {
-			fmt.Printf("[ExternalUserAuth] ❌ 中间件未启用 (Redis 未配置)\n")
+			fmt.Printf("[ExternalUserAuth] ❌ 中间件未启用, constant.ExternalUserRedisURL=%s\n", constant.ExternalUserRedisURL)
 			abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "服务未正确配置，请联系管理员 (Redis 未配置)")
 			return
 		}
 
-		// 从 Header 获取外部用户 Token
 		externalToken := c.Request.Header.Get("X-External-User-Token")
 		if externalToken == "" {
-			// 没有外部用户 token，拒绝请求
 			fmt.Printf("[ExternalUserAuth] ❌ 未收到 X-External-User-Token header\n")
-			fmt.Printf("[ExternalUserAuth] 收到的 Headers: %v\n", getHeaderKeys(c.Request.Header))
 			abortWithOpenAiMessage(c, http.StatusUnauthorized, "请先登录后再使用 API")
 			return
 		}
 		fmt.Printf("[ExternalUserAuth] ✓ 收到 Token: %s...\n", maskString(externalToken, 30))
 
-		// 验证 JWT Token
+		// 获取渠道配额配置 (从 header 传递)
+		channelId := c.Request.Header.Get("X-Channel-Id")
+		channelName := c.Request.Header.Get("X-Channel-Name")
+		quotaEnabledStr := c.Request.Header.Get("X-Channel-Quota-Enabled")
+		quotaLimitStr := c.Request.Header.Get("X-Channel-Quota-Limit")
+		
+		// 解析渠道配额配置
+		quotaEnabled := quotaEnabledStr != "false" // 默认启用
+		quotaLimit := externalUserConfig.MonthlyQuota // 默认使用全局配额
+		if quotaLimitStr != "" {
+			if parsed, err := strconv.Atoi(quotaLimitStr); err == nil {
+				quotaLimit = parsed
+			}
+		}
+		
+		fmt.Printf("[ExternalUserAuth] 渠道配置: ID=%s, Name=%s, QuotaEnabled=%v, QuotaLimit=%d\n", 
+			channelId, channelName, quotaEnabled, quotaLimit)
+
 		userData, err := verifyExternalJWT(externalToken)
 		if err != nil {
 			fmt.Printf("[ExternalUserAuth] ❌ JWT 验证失败: %v\n", err)
 			abortWithOpenAiMessage(c, http.StatusUnauthorized, "外部用户验证失败: "+err.Error())
 			return
 		}
-		fmt.Printf("[ExternalUserAuth] ✓ 用户验证成功: ID=%s, Username=%s, Email=%s\n", userData.ID, userData.Username, userData.Email)
+		fmt.Printf("[ExternalUserAuth] ✓ 用户验证成功: ID=%s, Email=%s\n", userData.ID, userData.Email)
 
-		// 检查是否是 VIP 用户
 		isVIP := userData.IsVIP && userData.VIPExpiresAt > time.Now().Unix()
-		
-		// 检查是否是管理员
 		isAdmin := userData.Username == "admin"
-		
-		fmt.Printf("[ExternalUserAuth] 用户状态: IsVIP=%v, VIPExpiresAt=%d, IsAdmin=%v\n", userData.IsVIP, userData.VIPExpiresAt, isAdmin)
 
-		// VIP 和管理员不受配额限制
 		if isVIP || isAdmin {
 			fmt.Printf("[ExternalUserAuth] ✓ VIP/管理员用户，跳过配额检查\n")
 			c.Set("external_user_id", userData.ID)
 			c.Set("external_user_email", userData.Email)
 			c.Set("external_user_vip", true)
-			// 设置响应头，告知前端配额状态
 			c.Header("X-Quota-Status", "vip")
 			c.Header("X-Quota-Used", "0")
 			c.Header("X-Quota-Total", "-1")
 			c.Header("X-Quota-Remaining", "-1")
+			c.Header("X-Channel-Id", channelId)
 			c.Next()
 			return
 		}
 
-		// 普通用户检查配额
-		quota, err := getUserQuota(userData.ID)
+		// 如果渠道禁用了配额，直接放行
+		if !quotaEnabled {
+			fmt.Printf("[ExternalUserAuth] ✓ 渠道 %s 禁用了配额限制，直接放行\n", channelName)
+			c.Set("external_user_id", userData.ID)
+			c.Set("external_user_email", userData.Email)
+			c.Set("external_user_vip", false)
+			c.Header("X-Quota-Status", "disabled")
+			c.Header("X-Quota-Used", "0")
+			c.Header("X-Quota-Total", "-1")
+			c.Header("X-Quota-Remaining", "-1")
+			c.Header("X-Channel-Id", channelId)
+			c.Next()
+			return
+		}
+
+		// 如果渠道配额无限制
+		if quotaLimit == -1 {
+			fmt.Printf("[ExternalUserAuth] ✓ 渠道 %s 配额无限制，直接放行\n", channelName)
+			c.Set("external_user_id", userData.ID)
+			c.Set("external_user_email", userData.Email)
+			c.Set("external_user_vip", false)
+			c.Header("X-Quota-Status", "unlimited")
+			c.Header("X-Quota-Used", "0")
+			c.Header("X-Quota-Total", "-1")
+			c.Header("X-Quota-Remaining", "-1")
+			c.Header("X-Channel-Id", channelId)
+			c.Next()
+			return
+		}
+
+		// 获取用户在该渠道的配额 (per-user-per-channel)
+		quota, err := getUserChannelQuota(userData.ID, channelId)
 		if err != nil {
 			fmt.Printf("[ExternalUserAuth] ❌ 获取配额失败: %v\n", err)
 			abortWithOpenAiMessage(c, http.StatusInternalServerError, "获取用户配额失败: "+err.Error())
 			return
 		}
-		fmt.Printf("[ExternalUserAuth] 当前配额: UsedCount=%d, MonthKey=%s\n", quota.UsedCount, quota.MonthKey)
 
-		// 检查是否需要重置配额 (新的月份)
 		currentMonthKey := time.Now().Format("2006-01")
 		if quota.MonthKey != currentMonthKey {
-			fmt.Printf("[ExternalUserAuth] 月份变更，重置配额: %s -> %s\n", quota.MonthKey, currentMonthKey)
 			quota.UsedCount = 0
 			quota.MonthKey = currentMonthKey
 			quota.LastResetAt = time.Now().Unix()
 		}
 
-		// 检查配额
-		if quota.UsedCount >= externalUserConfig.MonthlyQuota {
-			fmt.Printf("[ExternalUserAuth] ❌ 配额已用完: %d/%d\n", quota.UsedCount, externalUserConfig.MonthlyQuota)
-			abortWithOpenAiMessage(c, http.StatusTooManyRequests, 
-				fmt.Sprintf("本月调用次数已用完 (%d/%d)，请升级 VIP 或等待下月重置", 
-					quota.UsedCount, externalUserConfig.MonthlyQuota))
+		if quota.UsedCount >= quotaLimit {
+			fmt.Printf("[ExternalUserAuth] ❌ 渠道 %s 配额已用完: %d/%d\n", channelName, quota.UsedCount, quotaLimit)
+			abortWithOpenAiMessage(c, http.StatusTooManyRequests,
+				fmt.Sprintf("渠道「%s」本月调用次数已用完 (%d/%d)，请升级 VIP 或切换其他渠道",
+					channelName, quota.UsedCount, quotaLimit))
 			return
 		}
 
-		// 扣减配额
-		oldCount := quota.UsedCount
 		quota.UsedCount++
-		quotaSaveErr := saveUserQuota(userData.ID, quota)
-		if quotaSaveErr != nil {
-			// 保存失败不阻止请求，只记录日志
-			fmt.Printf("[ExternalUserAuth] ⚠️ 保存用户配额失败: %v\n", quotaSaveErr)
-			c.Set("external_quota_saved", false)
-			c.Set("external_quota_error", quotaSaveErr.Error())
-		} else {
-			fmt.Printf("[ExternalUserAuth] ✓ 配额扣减成功: %d -> %d (总配额: %d)\n", oldCount, quota.UsedCount, externalUserConfig.MonthlyQuota)
-			c.Set("external_quota_saved", true)
-			c.Set("external_quota_error", "")
+		if err := saveUserChannelQuota(userData.ID, channelId, quota); err != nil {
+			fmt.Printf("[ExternalUserAuth] ⚠️ 保存配额失败: %v\n", err)
 		}
 
 		c.Set("external_user_id", userData.ID)
 		c.Set("external_user_email", userData.Email)
 		c.Set("external_user_vip", false)
-		c.Set("external_user_quota_used", quota.UsedCount)
-		c.Set("external_user_quota_total", externalUserConfig.MonthlyQuota)
-		
-		// 设置响应头，告知前端配额状态
 		c.Header("X-Quota-Status", "active")
 		c.Header("X-Quota-Used", strconv.Itoa(quota.UsedCount))
-		c.Header("X-Quota-Total", strconv.Itoa(externalUserConfig.MonthlyQuota))
-		c.Header("X-Quota-Remaining", strconv.Itoa(externalUserConfig.MonthlyQuota - quota.UsedCount))
-		
-		fmt.Printf("[ExternalUserAuth] ========== 请求处理完成 ==========\n")
+		c.Header("X-Quota-Total", strconv.Itoa(quotaLimit))
+		c.Header("X-Quota-Remaining", strconv.Itoa(quotaLimit-quota.UsedCount))
+		c.Header("X-Channel-Id", channelId)
 
 		c.Next()
 	}
 }
 
-// maskString 遮蔽字符串，只显示前 n 个字符
 func maskString(s string, n int) string {
 	if len(s) <= n {
 		return s
@@ -184,26 +248,14 @@ func maskString(s string, n int) string {
 	return s[:n] + "..."
 }
 
-// getHeaderKeys 获取所有 header 的 key 列表
-func getHeaderKeys(h http.Header) []string {
-	keys := make([]string, 0, len(h))
-	for k := range h {
-		keys = append(keys, k)
-	}
-	return keys
-}
-
-// verifyExternalJWT 验证外部 JWT Token
 func verifyExternalJWT(tokenString string) (*ExternalUserData, error) {
 	parts := strings.Split(tokenString, ".")
 	if len(parts) != 3 {
 		return nil, fmt.Errorf("无效的 token 格式")
 	}
 
-	// 解码 payload
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		// 尝试标准 base64
 		payload, err = base64.StdEncoding.DecodeString(parts[1])
 		if err != nil {
 			return nil, fmt.Errorf("无法解码 token payload")
@@ -215,14 +267,12 @@ func verifyExternalJWT(tokenString string) (*ExternalUserData, error) {
 		return nil, fmt.Errorf("无法解析 token payload")
 	}
 
-	// 检查过期时间
 	if exp, ok := claims["exp"].(float64); ok {
 		if int64(exp) < time.Now().Unix() {
 			return nil, fmt.Errorf("token 已过期")
 		}
 	}
 
-	// 从 Redis 获取用户数据验证
 	userId, _ := claims["userId"].(string)
 	email, _ := claims["email"].(string)
 
@@ -230,10 +280,8 @@ func verifyExternalJWT(tokenString string) (*ExternalUserData, error) {
 		return nil, fmt.Errorf("token 中缺少用户信息")
 	}
 
-	// 从 Redis 获取用户详细信息
 	userData, err := getUserFromRedis(userId)
 	if err != nil {
-		// 如果 Redis 获取失败，使用 token 中的基本信息
 		userData = &ExternalUserData{
 			ID:    userId,
 			Email: email,
@@ -246,12 +294,215 @@ func verifyExternalJWT(tokenString string) (*ExternalUserData, error) {
 	return userData, nil
 }
 
+
 // getUserFromRedis 从 Redis 获取用户数据
 func getUserFromRedis(userId string) (*ExternalUserData, error) {
-	if externalUserConfig.RedisURL == "" {
+	if !externalUserConfig.Enabled {
 		return nil, fmt.Errorf("Redis 未配置")
 	}
 
+	key := "user:" + userId
+
+	if externalUserConfig.useLocalRedis {
+		// 本地 Redis
+		val, err := externalUserConfig.redisClient.Get(ctx, key).Result()
+		if err == redis.Nil {
+			return nil, fmt.Errorf("用户不存在")
+		}
+		if err != nil {
+			return nil, err
+		}
+		var userData ExternalUserData
+		if err := json.Unmarshal([]byte(val), &userData); err != nil {
+			return nil, err
+		}
+		return &userData, nil
+	}
+
+	// Upstash REST API (保持原有逻辑)
+	return getUserFromUpstash(userId)
+}
+
+// getUserQuota 获取用户配额 (旧版，保留兼容)
+func getUserQuota(userId string) (*UserQuota, error) {
+	if !externalUserConfig.Enabled {
+		return &UserQuota{MonthKey: time.Now().Format("2006-01")}, nil
+	}
+
+	key := "quota:" + userId
+
+	if externalUserConfig.useLocalRedis {
+		val, err := externalUserConfig.redisClient.Get(ctx, key).Result()
+		if err == redis.Nil {
+			return &UserQuota{MonthKey: time.Now().Format("2006-01")}, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		var quota UserQuota
+		if err := json.Unmarshal([]byte(val), &quota); err != nil {
+			return &UserQuota{MonthKey: time.Now().Format("2006-01")}, nil
+		}
+		return &quota, nil
+	}
+
+	// Upstash REST API
+	return getQuotaFromUpstash(userId)
+}
+
+// getUserChannelQuota 获取用户在特定渠道的配额 (per-user-per-channel)
+func getUserChannelQuota(userId string, channelId string) (*UserQuota, error) {
+	if !externalUserConfig.Enabled {
+		return &UserQuota{MonthKey: time.Now().Format("2006-01")}, nil
+	}
+
+	// 如果没有指定渠道，使用旧的 key 格式
+	var key string
+	if channelId == "" {
+		key = "quota:" + userId
+	} else {
+		key = "quota:" + userId + ":channel:" + channelId
+	}
+
+	if externalUserConfig.useLocalRedis {
+		val, err := externalUserConfig.redisClient.Get(ctx, key).Result()
+		if err == redis.Nil {
+			return &UserQuota{MonthKey: time.Now().Format("2006-01")}, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		var quota UserQuota
+		if err := json.Unmarshal([]byte(val), &quota); err != nil {
+			return &UserQuota{MonthKey: time.Now().Format("2006-01")}, nil
+		}
+		return &quota, nil
+	}
+
+	// Upstash REST API
+	return getChannelQuotaFromUpstash(userId, channelId)
+}
+
+// saveUserQuota 保存用户配额 (旧版，保留兼容)
+func saveUserQuota(userId string, quota *UserQuota) error {
+	if !externalUserConfig.Enabled {
+		return fmt.Errorf("Redis 未配置")
+	}
+
+	key := "quota:" + userId
+	quotaJSON, err := json.Marshal(quota)
+	if err != nil {
+		return err
+	}
+
+	if externalUserConfig.useLocalRedis {
+		return externalUserConfig.redisClient.Set(ctx, key, string(quotaJSON), 0).Err()
+	}
+
+	// Upstash REST API
+	return saveQuotaToUpstash(userId, quota)
+}
+
+// saveUserChannelQuota 保存用户在特定渠道的配额 (per-user-per-channel)
+func saveUserChannelQuota(userId string, channelId string, quota *UserQuota) error {
+	if !externalUserConfig.Enabled {
+		return fmt.Errorf("Redis 未配置")
+	}
+
+	// 如果没有指定渠道，使用旧的 key 格式
+	var key string
+	if channelId == "" {
+		key = "quota:" + userId
+	} else {
+		key = "quota:" + userId + ":channel:" + channelId
+	}
+	
+	quotaJSON, err := json.Marshal(quota)
+	if err != nil {
+		return err
+	}
+
+	if externalUserConfig.useLocalRedis {
+		return externalUserConfig.redisClient.Set(ctx, key, string(quotaJSON), 0).Err()
+	}
+
+	// Upstash REST API
+	return saveChannelQuotaToUpstash(userId, channelId, quota)
+}
+
+// GetExternalUserQuotaInfo 获取外部用户配额信息
+func GetExternalUserQuotaInfo(userId string) (used int, total int, isVIP bool, err error) {
+	if !externalUserConfig.Enabled {
+		return 0, 0, false, fmt.Errorf("外部用户验证未启用")
+	}
+
+	userData, err := getUserFromRedis(userId)
+	if err != nil {
+		return 0, 0, false, err
+	}
+
+	isVIP = userData.IsVIP && userData.VIPExpiresAt > time.Now().Unix()
+	if isVIP || userData.Username == "admin" {
+		return 0, -1, true, nil
+	}
+
+	quota, err := getUserQuota(userId)
+	if err != nil {
+		return 0, 0, false, err
+	}
+
+	currentMonthKey := time.Now().Format("2006-01")
+	if quota.MonthKey != currentMonthKey {
+		quota.UsedCount = 0
+	}
+
+	return quota.UsedCount, externalUserConfig.MonthlyQuota, false, nil
+}
+
+// SetUserVIP 设置用户 VIP 状态
+func SetUserVIP(userId string, isVIP bool, expiresAt int64) error {
+	userData, err := getUserFromRedis(userId)
+	if err != nil {
+		return err
+	}
+
+	userData.IsVIP = isVIP
+	userData.VIPExpiresAt = expiresAt
+
+	userJSON, err := json.Marshal(userData)
+	if err != nil {
+		return err
+	}
+
+	key := "user:" + userId
+
+	if externalUserConfig.useLocalRedis {
+		return externalUserConfig.redisClient.Set(ctx, key, string(userJSON), 0).Err()
+	}
+
+	// Upstash REST API
+	return setUserToUpstash(userId, userData)
+}
+
+// IsExternalUserEnabled 检查外部用户验证是否启用
+func IsExternalUserEnabled() bool {
+	return externalUserConfig.Enabled
+}
+
+// GetRedisClient 获取 Redis 客户端 (供外部使用)
+func GetRedisClient() *redis.Client {
+	return externalUserConfig.redisClient
+}
+
+// IsUsingLocalRedis 是否使用本地 Redis
+func IsUsingLocalRedis() bool {
+	return externalUserConfig.useLocalRedis
+}
+
+
+// ========== Upstash REST API 兼容函数 ==========
+
+func getUserFromUpstash(userId string) (*ExternalUserData, error) {
 	key := "user:" + userId
 	url := fmt.Sprintf("%s/get/%s", externalUserConfig.RedisURL, key)
 	req, err := http.NewRequest("GET", url, nil)
@@ -283,7 +534,6 @@ func getUserFromRedis(userId string) (*ExternalUserData, error) {
 		return nil, fmt.Errorf("用户不存在")
 	}
 
-	// Upstash 可能返回 string 或 object
 	var userData ExternalUserData
 	switch v := result.Result.(type) {
 	case string:
@@ -294,7 +544,6 @@ func getUserFromRedis(userId string) (*ExternalUserData, error) {
 			return nil, err
 		}
 	case map[string]interface{}:
-		// 直接是 JSON object
 		jsonBytes, _ := json.Marshal(v)
 		if err := json.Unmarshal(jsonBytes, &userData); err != nil {
 			return nil, err
@@ -306,15 +555,8 @@ func getUserFromRedis(userId string) (*ExternalUserData, error) {
 	return &userData, nil
 }
 
-// getUserQuota 获取用户配额
-func getUserQuota(userId string) (*UserQuota, error) {
-	if externalUserConfig.RedisURL == "" {
-		return &UserQuota{}, nil
-	}
-
-	// Upstash REST API: GET /get/:key (key 需要 URL 编码)
+func getQuotaFromUpstash(userId string) (*UserQuota, error) {
 	key := "quota:" + userId
-	fmt.Printf("[ExternalUserAuth] 查询配额 key: %s\n", key)
 	url := fmt.Sprintf("%s/get/%s", externalUserConfig.RedisURL, key)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -333,7 +575,6 @@ func getUserQuota(userId string) (*UserQuota, error) {
 	if err != nil {
 		return nil, err
 	}
-	fmt.Printf("[ExternalUserAuth] Redis 返回: %s\n", string(body))
 
 	var result struct {
 		Result interface{} `json:"result"`
@@ -342,44 +583,24 @@ func getUserQuota(userId string) (*UserQuota, error) {
 		return nil, err
 	}
 
-	quota := &UserQuota{
-		MonthKey: time.Now().Format("2006-01"),
-	}
-
-	// Upstash 可能返回 string 或 null
+	quota := &UserQuota{MonthKey: time.Now().Format("2006-01")}
 	if result.Result != nil {
-		switch v := result.Result.(type) {
-		case string:
-			if v != "" {
-				json.Unmarshal([]byte(v), quota)
-			}
+		if v, ok := result.Result.(string); ok && v != "" {
+			json.Unmarshal([]byte(v), quota)
 		}
 	}
 
 	return quota, nil
 }
 
-// saveUserQuota 保存用户配额
-func saveUserQuota(userId string, quota *UserQuota) error {
-	if externalUserConfig.RedisURL == "" {
-		return fmt.Errorf("Redis URL 未配置")
-	}
-
-	quotaJSON, err := json.Marshal(quota)
-	if err != nil {
-		return fmt.Errorf("序列化配额失败: %v", err)
-	}
-
-	// Upstash Redis REST API: POST with body [command, args...]
-	// 使用 pipeline 方式: POST / with body ["SET", "key", "value"]
+func saveQuotaToUpstash(userId string, quota *UserQuota) error {
+	quotaJSON, _ := json.Marshal(quota)
 	key := "quota:" + userId
 	cmdBody, _ := json.Marshal([]string{"SET", key, string(quotaJSON)})
-	
-	fmt.Printf("[ExternalUserAuth] 保存配额到 Redis: key=%s, value=%s\n", key, string(quotaJSON))
-	
+
 	req, err := http.NewRequest("POST", externalUserConfig.RedisURL, bytes.NewReader(cmdBody))
 	if err != nil {
-		return fmt.Errorf("创建请求失败: %v", err)
+		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+externalUserConfig.RedisToken)
 	req.Header.Set("Content-Type", "application/json")
@@ -387,69 +608,24 @@ func saveUserQuota(userId string, quota *UserQuota) error {
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("Redis 请求失败: %v", err)
+		return err
 	}
 	defer resp.Body.Close()
 
-	// 读取并检查响应
-	body, _ := io.ReadAll(resp.Body)
-	fmt.Printf("[ExternalUserAuth] Redis 响应: status=%d, body=%s\n", resp.StatusCode, string(body))
-	
 	if resp.StatusCode != 200 {
-		return fmt.Errorf("Redis 返回错误: status=%d, body=%s", resp.StatusCode, string(body))
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("Redis 返回错误: %s", string(body))
 	}
 
 	return nil
 }
 
-// GetExternalUserQuotaInfo 获取外部用户配额信息 (供 API 调用)
-func GetExternalUserQuotaInfo(userId string) (used int, total int, isVIP bool, err error) {
-	if !externalUserConfig.Enabled {
-		return 0, 0, false, fmt.Errorf("外部用户验证未启用")
-	}
+func setUserToUpstash(userId string, userData *ExternalUserData) error {
+	userJSON, _ := json.Marshal(userData)
+	key := "user:" + userId
+	cmdBody, _ := json.Marshal([]string{"SET", key, string(userJSON)})
 
-	userData, err := getUserFromRedis(userId)
-	if err != nil {
-		return 0, 0, false, err
-	}
-
-	isVIP = userData.IsVIP && userData.VIPExpiresAt > time.Now().Unix()
-	if isVIP || userData.Username == "admin" {
-		return 0, -1, true, nil // -1 表示无限
-	}
-
-	quota, err := getUserQuota(userId)
-	if err != nil {
-		return 0, 0, false, err
-	}
-
-	// 检查月份重置
-	currentMonthKey := time.Now().Format("2006-01")
-	if quota.MonthKey != currentMonthKey {
-		quota.UsedCount = 0
-	}
-
-	return quota.UsedCount, externalUserConfig.MonthlyQuota, false, nil
-}
-
-// SetUserVIP 设置用户 VIP 状态
-func SetUserVIP(userId string, isVIP bool, expiresAt int64) error {
-	userData, err := getUserFromRedis(userId)
-	if err != nil {
-		return err
-	}
-
-	userData.IsVIP = isVIP
-	userData.VIPExpiresAt = expiresAt
-
-	// 保存回 Redis
-	userJSON, err := json.Marshal(userData)
-	if err != nil {
-		return err
-	}
-
-	url := fmt.Sprintf("%s/set/user:%s", externalUserConfig.RedisURL, userId)
-	req, err := http.NewRequest("POST", url, bytes.NewReader(userJSON))
+	req, err := http.NewRequest("POST", externalUserConfig.RedisURL, bytes.NewReader(cmdBody))
 	if err != nil {
 		return err
 	}
@@ -464,16 +640,4 @@ func SetUserVIP(userId string, isVIP bool, expiresAt int64) error {
 	defer resp.Body.Close()
 
 	return nil
-}
-
-// parseIntOrDefault 解析整数，失败返回默认值
-func parseIntOrDefault(s string, defaultVal int) int {
-	if s == "" {
-		return defaultVal
-	}
-	val, err := strconv.Atoi(s)
-	if err != nil {
-		return defaultVal
-	}
-	return val
 }
