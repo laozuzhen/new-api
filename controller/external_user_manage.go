@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/middleware"
 	"github.com/gin-gonic/gin"
 )
 
@@ -34,7 +35,11 @@ type UserQuotaData struct {
 
 // GetExternalUsers 获取所有外部用户列表
 func GetExternalUsers(c *gin.Context) {
-	if constant.ExternalUserRedisURL == "" || constant.ExternalUserRedisToken == "" {
+	// 检查是否使用本地 Redis
+	isLocalRedis := len(constant.ExternalUserRedisURL) > 0 && 
+		(len(constant.ExternalUserRedisURL) >= 8 && constant.ExternalUserRedisURL[:8] == "redis://")
+	
+	if constant.ExternalUserRedisURL == "" || (!isLocalRedis && constant.ExternalUserRedisToken == "") {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
 			"message": "Redis 未配置",
@@ -42,6 +47,22 @@ func GetExternalUsers(c *gin.Context) {
 		return
 	}
 
+	// 如果是本地 Redis，使用 go-redis 客户端
+	if isLocalRedis {
+		users, err := getExternalUsersFromLocalRedis()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"data":    users,
+			"total":   len(users),
+		})
+		return
+	}
+
+	// Upstash REST API 方式 (原有逻辑)
 	// 使用 SCAN 命令获取所有 user:* 键
 	users := []ExternalUserInfo{}
 	cursor := "0"
@@ -397,4 +418,72 @@ func parseIntParam(s string, defaultVal int) int {
 		return defaultVal
 	}
 	return val
+}
+
+// getExternalUsersFromLocalRedis 从本地 Redis 获取外部用户列表
+func getExternalUsersFromLocalRedis() ([]ExternalUserInfo, error) {
+	redisClient := middleware.GetRedisClient()
+	if redisClient == nil {
+		return nil, fmt.Errorf("Redis 客户端未初始化")
+	}
+
+	ctx := redisClient.Context()
+	users := []ExternalUserInfo{}
+
+	// 使用 SCAN 获取所有 user:* 键
+	var cursor uint64
+	for {
+		keys, nextCursor, err := redisClient.Scan(ctx, cursor, "user:*", 100).Result()
+		if err != nil {
+			return nil, fmt.Errorf("扫描 Redis 失败: %v", err)
+		}
+
+		for _, key := range keys {
+			if len(key) <= 5 {
+				continue
+			}
+			userId := key[5:] // 去掉 "user:" 前缀
+
+			// 获取用户数据
+			userData, err := redisClient.Get(ctx, key).Result()
+			if err != nil {
+				continue
+			}
+
+			var user ExternalUserInfo
+			if err := json.Unmarshal([]byte(userData), &user); err != nil {
+				continue
+			}
+			user.ID = userId
+
+			// 获取配额数据
+			quotaData, err := redisClient.Get(ctx, "quota:"+userId).Result()
+			if err == nil && quotaData != "" {
+				var quota UserQuotaData
+				if json.Unmarshal([]byte(quotaData), &quota) == nil {
+					currentMonth := time.Now().Format("2006-01")
+					if quota.MonthKey == currentMonth {
+						user.QuotaUsed = quota.UsedCount
+					}
+					user.MonthKey = quota.MonthKey
+				}
+			}
+
+			// 设置配额总量
+			if user.IsVIP && user.VIPExpiresAt > time.Now().Unix() {
+				user.QuotaTotal = -1
+			} else {
+				user.QuotaTotal = constant.ExternalUserMonthlyQuota
+			}
+
+			users = append(users, user)
+		}
+
+		cursor = nextCursor
+		if cursor == 0 {
+			break
+		}
+	}
+
+	return users, nil
 }
