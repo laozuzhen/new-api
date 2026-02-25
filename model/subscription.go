@@ -1,6 +1,7 @@
 package model
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -48,6 +49,10 @@ var (
 
 	subscriptionPlanCache     *cachex.HybridCache[SubscriptionPlan]
 	subscriptionPlanInfoCache *cachex.HybridCache[SubscriptionPlanInfo]
+
+	// ExternalUserVIPCallback 用于在 CompleteSubscriptionOrder 中更新 Editor 用户的 VIP 状态。
+	// 由 middleware 包在初始化时注册，避免 model → middleware 的循环依赖。
+	ExternalUserVIPCallback func(userId string, isVIP bool, expiresAt int64) error
 )
 
 func subscriptionPlanCacheTTL() time.Duration {
@@ -175,6 +180,10 @@ type SubscriptionPlan struct {
 	QuotaResetPeriod        string `json:"quota_reset_period" gorm:"type:varchar(16);default:'never'"`
 	QuotaResetCustomSeconds int64  `json:"quota_reset_custom_seconds" gorm:"type:bigint;default:0"`
 
+	// Channel-level quota configuration (JSON)
+	// Format: {"channel_id": quota_limit, ...}  where -1 = unlimited, 0 = use plan default (TotalAmount)
+	ChannelQuotas string `json:"channel_quotas" gorm:"type:text;default:'{}'"`
+
 	CreatedAt int64 `json:"created_at" gorm:"bigint"`
 	UpdatedAt int64 `json:"updated_at" gorm:"bigint"`
 }
@@ -191,6 +200,24 @@ func (p *SubscriptionPlan) BeforeUpdate(tx *gorm.DB) error {
 	return nil
 }
 
+// GetChannelQuotasMap 解析 channel_quotas JSON 为 map
+func (p *SubscriptionPlan) GetChannelQuotasMap() map[string]int64 {
+	result := make(map[string]int64)
+	if p.ChannelQuotas == "" || p.ChannelQuotas == "{}" {
+		return result
+	}
+	_ = json.Unmarshal([]byte(p.ChannelQuotas), &result)
+	return result
+}
+
+// GetChannelQuota 获取指定渠道的配额限制
+// 返回值: quota (-1=无限, >0=具体限制), found (是否在计划中配置了该渠道)
+func (p *SubscriptionPlan) GetChannelQuota(channelId string) (int64, bool) {
+	quotas := p.GetChannelQuotasMap()
+	quota, found := quotas[channelId]
+	return quota, found
+}
+
 // Subscription order (payment -> webhook -> create UserSubscription)
 type SubscriptionOrder struct {
 	Id     int     `json:"id"`
@@ -205,6 +232,7 @@ type SubscriptionOrder struct {
 	CompleteTime  int64  `json:"complete_time"`
 
 	ProviderPayload string `json:"provider_payload" gorm:"type:text"`
+	ExternalUserId  string `json:"external_user_id" gorm:"type:varchar(128);index;default:''"`
 }
 
 func (o *SubscriptionOrder) Insert() error {
@@ -505,6 +533,7 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 }
 
 // Complete a subscription order (idempotent). Creates a UserSubscription snapshot from the plan.
+// For Editor users (ExternalUserId != ""), updates Redis VIP status instead of creating UserSubscription.
 func CompleteSubscriptionOrder(tradeNo string, providerPayload string) error {
 	if tradeNo == "" {
 		return errors.New("tradeNo is empty")
@@ -514,10 +543,12 @@ func CompleteSubscriptionOrder(tradeNo string, providerPayload string) error {
 		refCol = `"trade_no"`
 	}
 	var logUserId int
+	var logExternalUserId string
 	var logPlanTitle string
 	var logMoney float64
 	var logPaymentMethod string
 	var upgradeGroup string
+	var externalVIPExpiresAt int64
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		var order SubscriptionOrder
 		if err := tx.Set("gorm:query_option", "FOR UPDATE").Where(refCol+" = ?", tradeNo).First(&order).Error; err != nil {
@@ -536,11 +567,25 @@ func CompleteSubscriptionOrder(tradeNo string, providerPayload string) error {
 		if !plan.Enabled {
 			// still allow completion for already purchased orders
 		}
-		upgradeGroup = strings.TrimSpace(plan.UpgradeGroup)
-		_, err = CreateUserSubscriptionFromPlanTx(tx, order.UserId, plan, "order")
-		if err != nil {
-			return err
+
+		if order.ExternalUserId != "" {
+			// Editor 用户：计算过期时间，不创建 UserSubscription
+			now := time.Now()
+			expiresAt, err := calcPlanEndTime(now, plan)
+			if err != nil {
+				return fmt.Errorf("calcPlanEndTime failed: %w", err)
+			}
+			externalVIPExpiresAt = expiresAt
+			logExternalUserId = order.ExternalUserId
+		} else {
+			// new-api 用户：走现有逻辑
+			upgradeGroup = strings.TrimSpace(plan.UpgradeGroup)
+			_, err = CreateUserSubscriptionFromPlanTx(tx, order.UserId, plan, "order")
+			if err != nil {
+				return err
+			}
 		}
+
 		if err := upsertSubscriptionTopUpTx(tx, &order); err != nil {
 			return err
 		}
@@ -561,14 +606,159 @@ func CompleteSubscriptionOrder(tradeNo string, providerPayload string) error {
 	if err != nil {
 		return err
 	}
-	if upgradeGroup != "" && logUserId > 0 {
-		_ = UpdateUserGroupCache(logUserId, upgradeGroup)
-	}
-	if logUserId > 0 {
-		msg := fmt.Sprintf("订阅购买成功，套餐: %s，支付金额: %.2f，支付方式: %s", logPlanTitle, logMoney, logPaymentMethod)
-		RecordLog(logUserId, LogTypeTopup, msg)
+
+	// 事务完成后的后处理
+	if logExternalUserId != "" {
+		// Editor 用户：更新 Redis VIP 状态
+		if ExternalUserVIPCallback != nil {
+			if err := ExternalUserVIPCallback(logExternalUserId, true, externalVIPExpiresAt); err != nil {
+				fmt.Printf("[CompleteSubscriptionOrder] SetUserVIP failed for external user %s: %v\n", logExternalUserId, err)
+				return fmt.Errorf("SetUserVIP failed: %w", err)
+			}
+		}
+		fmt.Printf("[CompleteSubscriptionOrder] Editor 用户订阅成功，用户: %s，套餐: %s，过期时间: %d\n", logExternalUserId, logPlanTitle, externalVIPExpiresAt)
+	} else {
+		// new-api 用户：走现有后处理
+		if upgradeGroup != "" && logUserId > 0 {
+			_ = UpdateUserGroupCache(logUserId, upgradeGroup)
+		}
+		if logUserId > 0 {
+			msg := fmt.Sprintf("订阅购买成功，套餐: %s，支付金额: %.2f，支付方式: %s", logPlanTitle, logMoney, logPaymentMethod)
+			RecordLog(logUserId, LogTypeTopup, msg)
+		}
 	}
 	return nil
+}
+
+// ExternalSubscriptionInfo 用于返回 Editor 用户的订阅信息
+type ExternalSubscriptionInfo struct {
+	OrderId       int     `json:"order_id"`
+	PlanId        int     `json:"plan_id"`
+	PlanTitle     string  `json:"plan_title"`
+	PlanSubtitle  string  `json:"plan_subtitle"`
+	TotalAmount   int64   `json:"total_amount"`
+	ChannelQuotas string  `json:"channel_quotas"` // 渠道配额 JSON
+	Money         float64 `json:"money"`
+	Status        string  `json:"status"`
+	CreateTime    int64   `json:"create_time"`
+	CompleteTime  int64   `json:"complete_time"`
+	ExpiresAt     int64   `json:"expires_at"`
+	IsActive      bool    `json:"is_active"`
+}
+
+// GetExternalUserSubscriptions 查询 Editor 用户的所有成功订阅历史
+func GetExternalUserSubscriptions(externalUserId string) ([]ExternalSubscriptionInfo, error) {
+	if externalUserId == "" {
+		return nil, errors.New("externalUserId is empty")
+	}
+	var orders []SubscriptionOrder
+	if err := DB.Where("external_user_id = ? AND status = ?", externalUserId, common.TopUpStatusSuccess).
+		Order("complete_time DESC").Find(&orders).Error; err != nil {
+		return nil, err
+	}
+	now := time.Now().Unix()
+	var results []ExternalSubscriptionInfo
+	for _, order := range orders {
+		plan, err := GetSubscriptionPlanById(order.PlanId)
+		if err != nil {
+			continue // 跳过找不到计划的订单
+		}
+		expiresAt, err := calcPlanEndTime(time.Unix(order.CompleteTime, 0), plan)
+		if err != nil {
+			continue
+		}
+		info := ExternalSubscriptionInfo{
+			OrderId:       order.Id,
+			PlanId:        order.PlanId,
+			PlanTitle:     plan.Title,
+			PlanSubtitle:  plan.Subtitle,
+			TotalAmount:   plan.TotalAmount,
+			ChannelQuotas: plan.ChannelQuotas,
+			Money:         order.Money,
+			Status:        order.Status,
+			CreateTime:    order.CreateTime,
+			CompleteTime:  order.CompleteTime,
+			ExpiresAt:     expiresAt,
+			IsActive:      expiresAt > now,
+		}
+		results = append(results, info)
+	}
+	return results, nil
+}
+
+// GetExternalUserActiveSubscription 查询 Editor 用户的当前活跃订阅（最佳的一个）
+func GetExternalUserActiveSubscription(externalUserId string) (*ExternalSubscriptionInfo, error) {
+	subs, err := GetExternalUserSubscriptions(externalUserId)
+	if err != nil {
+		return nil, err
+	}
+	var activeSubs []ExternalSubscriptionInfo
+	for _, s := range subs {
+		if s.IsActive {
+			activeSubs = append(activeSubs, s)
+		}
+	}
+	return SelectBestSubscription(activeSubs), nil
+}
+
+// SelectBestSubscription 从多个活跃订阅中选择最佳的
+// 规则：total_amount = 0（无限配额）优先，否则选择 total_amount 最高的
+func SelectBestSubscription(subscriptions []ExternalSubscriptionInfo) *ExternalSubscriptionInfo {
+	if len(subscriptions) == 0 {
+		return nil
+	}
+	best := &subscriptions[0]
+	for i := 1; i < len(subscriptions); i++ {
+		s := &subscriptions[i]
+		if s.TotalAmount == 0 { // 无限配额，直接返回
+			return s
+		}
+		if best.TotalAmount != 0 && s.TotalAmount > best.TotalAmount {
+			best = s
+		}
+	}
+	return best
+}
+
+// SelectBestSubscriptionForChannel 从多个活跃订阅中选择对指定渠道最优的
+// 规则：该渠道配额 -1（无限）优先，否则选择该渠道配额最高的，如果渠道没有单独配置则用 total_amount
+func SelectBestSubscriptionForChannel(subscriptions []ExternalSubscriptionInfo, channelId string) *ExternalSubscriptionInfo {
+	if len(subscriptions) == 0 {
+		return nil
+	}
+
+	type scored struct {
+		info  *ExternalSubscriptionInfo
+		quota int64 // -1=无限, 0=未配置用total_amount, >0=具体值
+	}
+
+	var candidates []scored
+	for i := range subscriptions {
+		s := &subscriptions[i]
+		var channelQuotas map[string]int64
+		if s.ChannelQuotas != "" && s.ChannelQuotas != "{}" {
+			_ = json.Unmarshal([]byte(s.ChannelQuotas), &channelQuotas)
+		}
+
+		q, found := channelQuotas[channelId]
+		if !found {
+			// 渠道未单独配置，使用 total_amount
+			q = s.TotalAmount // 0 = 无限（保持原有语义）
+		}
+		candidates = append(candidates, scored{info: s, quota: q})
+	}
+
+	// 选择最优：-1（无限）或 0（total_amount=0 即无限）优先，否则选最大值
+	best := candidates[0]
+	for _, c := range candidates[1:] {
+		if c.quota == -1 || c.quota == 0 { // 无限
+			return c.info
+		}
+		if best.quota != -1 && best.quota != 0 && c.quota > best.quota {
+			best = c
+		}
+	}
+	return best.info
 }
 
 func upsertSubscriptionTopUpTx(tx *gorm.DB, order *SubscriptionOrder) error {
@@ -648,6 +838,53 @@ func AdminBindSubscription(userId int, planId int, sourceNote string) (string, e
 		return fmt.Sprintf("用户分组将升级到 %s", plan.UpgradeGroup), nil
 	}
 	return "", nil
+}
+
+// AdminBindExternalSubscription binds a subscription plan to an Editor (external) user.
+// It creates an order record and updates Redis VIP status via ExternalUserVIPCallback.
+func AdminBindExternalSubscription(externalUserId string, planId int, sourceNote string) (string, error) {
+	if externalUserId == "" || planId <= 0 {
+		return "", errors.New("invalid externalUserId or planId")
+	}
+	plan, err := GetSubscriptionPlanById(planId)
+	if err != nil {
+		return "", err
+	}
+
+	// 创建订单记录
+	now := common.GetTimestamp()
+	tradeNo := fmt.Sprintf("ADMIN_EXT_%s_%d", externalUserId, now)
+	order := &SubscriptionOrder{
+		UserId:         0,
+		ExternalUserId: externalUserId,
+		PlanId:         plan.Id,
+		Money:          0, // 管理员绑定免费
+		TradeNo:        tradeNo,
+		PaymentMethod:  "admin",
+		Status:         common.TopUpStatusSuccess,
+		CreateTime:     now,
+		CompleteTime:   now,
+	}
+	if err := order.Insert(); err != nil {
+		return "", err
+	}
+
+	// 计算过期时间（复用 calcPlanEndTime）
+	expiresAt, err := calcPlanEndTime(time.Now(), plan)
+	if err != nil {
+		return "", fmt.Errorf("calcPlanEndTime failed: %w", err)
+	}
+
+	// 更新 Redis VIP 状态
+	if ExternalUserVIPCallback != nil {
+		if err := ExternalUserVIPCallback(externalUserId, true, expiresAt); err != nil {
+			return "", fmt.Errorf("更新 Redis VIP 状态失败: %v", err)
+		}
+	} else {
+		return "", errors.New("ExternalUserVIPCallback 未注册，无法更新 VIP 状态")
+	}
+
+	return fmt.Sprintf("已为 Editor 用户 %s 绑定 %s 计划", externalUserId, plan.Title), nil
 }
 
 // GetAllActiveUserSubscriptions returns all active subscriptions for a user.
@@ -754,6 +991,42 @@ func AdminInvalidateUserSubscription(userSubscriptionId int) (string, error) {
 		return fmt.Sprintf("用户分组将回退到 %s", downgradeGroup), nil
 	}
 	return "", nil
+}
+
+// AdminInvalidateExternalSubscription cancels an external (Editor) user's subscription order
+// and clears their Redis VIP status.
+func AdminInvalidateExternalSubscription(orderId int) (string, error) {
+	if orderId <= 0 {
+		return "", errors.New("invalid orderId")
+	}
+
+	var order SubscriptionOrder
+	if err := DB.Where("id = ?", orderId).First(&order).Error; err != nil {
+		return "", fmt.Errorf("订单不存在: %w", err)
+	}
+	if order.ExternalUserId == "" {
+		return "", errors.New("该订单不是 Editor 用户订单")
+	}
+	if order.Status != common.TopUpStatusSuccess {
+		return "", fmt.Errorf("订单状态不是成功状态，当前: %s", order.Status)
+	}
+
+	// 更新订单状态为 cancelled
+	if err := DB.Model(&order).Updates(map[string]interface{}{
+		"status":        "cancelled",
+		"complete_time": common.GetTimestamp(),
+	}).Error; err != nil {
+		return "", fmt.Errorf("更新订单状态失败: %w", err)
+	}
+
+	// 清除 Redis VIP 状态
+	if ExternalUserVIPCallback != nil {
+		if err := ExternalUserVIPCallback(order.ExternalUserId, false, 0); err != nil {
+			return "", fmt.Errorf("清除 Redis VIP 状态失败: %v", err)
+		}
+	}
+
+	return fmt.Sprintf("已作废 Editor 用户 %s 的订单 #%d", order.ExternalUserId, orderId), nil
 }
 
 // AdminDeleteUserSubscription hard-deletes a user subscription.

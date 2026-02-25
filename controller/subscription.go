@@ -239,6 +239,7 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 			"upgrade_group":              req.Plan.UpgradeGroup,
 			"quota_reset_period":         req.Plan.QuotaResetPeriod,
 			"quota_reset_custom_seconds": req.Plan.QuotaResetCustomSeconds,
+			"channel_quotas":             req.Plan.ChannelQuotas,
 			"updated_at":                 common.GetTimestamp(),
 		}
 		if err := tx.Model(&model.SubscriptionPlan{}).Where("id = ?", id).Updates(updateMap).Error; err != nil {
@@ -278,17 +279,29 @@ func AdminUpdateSubscriptionPlanStatus(c *gin.Context) {
 }
 
 type AdminBindSubscriptionRequest struct {
-	UserId int `json:"user_id"`
-	PlanId int `json:"plan_id"`
+	UserId         int    `json:"user_id"`
+	PlanId         int    `json:"plan_id"`
+	ExternalUserId string `json:"external_user_id"`
 }
 
 func AdminBindSubscription(c *gin.Context) {
 	var req AdminBindSubscriptionRequest
-	if err := c.ShouldBindJSON(&req); err != nil || req.UserId <= 0 || req.PlanId <= 0 {
+	if err := c.ShouldBindJSON(&req); err != nil || req.PlanId <= 0 {
 		common.ApiErrorMsg(c, "参数错误")
 		return
 	}
-	msg, err := model.AdminBindSubscription(req.UserId, req.PlanId, "")
+	if req.UserId <= 0 && req.ExternalUserId == "" {
+		common.ApiErrorMsg(c, "user_id 和 external_user_id 至少需要一个")
+		return
+	}
+
+	var msg string
+	var err error
+	if req.ExternalUserId != "" {
+		msg, err = model.AdminBindExternalSubscription(req.ExternalUserId, req.PlanId, "")
+	} else {
+		msg, err = model.AdminBindSubscription(req.UserId, req.PlanId, "")
+	}
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -352,6 +365,25 @@ func AdminInvalidateUserSubscription(c *gin.Context) {
 		return
 	}
 	msg, err := model.AdminInvalidateUserSubscription(subId)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if msg != "" {
+		common.ApiSuccess(c, gin.H{"message": msg})
+		return
+	}
+	common.ApiSuccess(c, nil)
+}
+
+// AdminInvalidateExternalSubscription cancels an external (Editor) user's subscription order.
+func AdminInvalidateExternalSubscription(c *gin.Context) {
+	orderId, _ := strconv.Atoi(c.Param("id"))
+	if orderId <= 0 {
+		common.ApiErrorMsg(c, "无效的订单ID")
+		return
+	}
+	msg, err := model.AdminInvalidateExternalSubscription(orderId)
 	if err != nil {
 		common.ApiError(c, err)
 		return

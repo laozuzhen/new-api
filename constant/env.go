@@ -11,6 +11,7 @@ var GetMediaTokenNotStream bool
 var UpdateTask bool
 var MaxRequestBodyMB int
 var AzureDefaultAPIVersion string
+var GeminiVisionMaxImageNum int
 var NotifyLimitCount int
 var NotificationLimitDurationMinute int
 var GenerateDefaultToken bool

@@ -143,11 +143,13 @@ func SetApiRouter(router *gin.Engine) {
 			externalUserRoute.POST("/batch-quota", controller.BatchUpdateQuota)
 		}
 
+		// Subscription plans - no auth required (public)
+		apiRouter.GET("/subscription/plans", controller.GetSubscriptionPlans)
+
 		// Subscription billing (plans, purchase, admin management)
 		subscriptionRoute := apiRouter.Group("/subscription")
 		subscriptionRoute.Use(middleware.UserAuth())
 		{
-			subscriptionRoute.GET("/plans", controller.GetSubscriptionPlans)
 			subscriptionRoute.GET("/self", controller.GetSubscriptionSelf)
 			subscriptionRoute.PUT("/self/preference", controller.UpdateSubscriptionPreference)
 			subscriptionRoute.POST("/epay/pay", middleware.CriticalRateLimit(), controller.SubscriptionRequestEpay)
@@ -168,6 +170,7 @@ func SetApiRouter(router *gin.Engine) {
 			subscriptionAdminRoute.POST("/users/:id/subscriptions", controller.AdminCreateUserSubscription)
 			subscriptionAdminRoute.POST("/user_subscriptions/:id/invalidate", controller.AdminInvalidateUserSubscription)
 			subscriptionAdminRoute.DELETE("/user_subscriptions/:id", controller.AdminDeleteUserSubscription)
+			subscriptionAdminRoute.POST("/external_orders/:id/invalidate", controller.AdminInvalidateExternalSubscription)
 		}
 
 		// Subscription payment callbacks (no auth)
@@ -175,6 +178,14 @@ func SetApiRouter(router *gin.Engine) {
 		apiRouter.GET("/subscription/epay/notify", controller.SubscriptionEpayNotify)
 		apiRouter.GET("/subscription/epay/return", controller.SubscriptionEpayReturn)
 		apiRouter.POST("/subscription/epay/return", controller.SubscriptionEpayReturn)
+
+		// External subscription endpoints (Editor JWT auth)
+		externalSubRoute := apiRouter.Group("/subscription/external")
+		externalSubRoute.Use(middleware.ExternalUserJWTAuth())
+		{
+			externalSubRoute.POST("/epay/pay", controller.ExternalSubscriptionRequestEpay)
+			externalSubRoute.GET("/self", controller.ExternalGetSubscriptionSelf)
+		}
 		optionRoute := apiRouter.Group("/option")
 		optionRoute.Use(middleware.RootAuth())
 		{

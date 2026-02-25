@@ -900,7 +900,7 @@ func testDisabledChannels() error {
 			disabledCount++
 
 			tik := time.Now()
-			result := testChannel(channel, "", "")
+			result := testChannel(channel, "", "", false)
 			tok := time.Now()
 			milliseconds := tok.Sub(tik).Milliseconds()
 

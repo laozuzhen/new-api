@@ -1,0 +1,8 @@
+﻿go : main.go:37:12: pattern web/dist: no matching files found
+所在位置 行:1 字符: 43
++ $env:GOPROXY="https://goproxy.cn,direct"; go build ./... 2>&1 | Out-F ...
++                                           ~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (main.go:37:12: ...ing files found 
+   :String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/gin-gonic/gin"
 	"github.com/go-redis/redis/v8"
 )
@@ -78,6 +79,12 @@ func InitExternalUserAuth(redisURL, redisToken, jwtSecret string, monthlyQuota i
 		externalUserConfig.Enabled = false
 		constant.ExternalUserAuthEnabled = false
 		fmt.Printf("[ExternalUserAuth] ⚠️ 外部用户验证未启用 (Redis 未配置)\n")
+	}
+
+	// 注册 VIP 回调到 model 包，避免循环依赖
+	if externalUserConfig.Enabled {
+		model.ExternalUserVIPCallback = SetUserVIP
+		fmt.Printf("[ExternalUserAuth] ✓ 已注册 ExternalUserVIPCallback\n")
 	}
 }
 
@@ -170,6 +177,60 @@ func ExternalUserAuth() gin.HandlerFunc {
 			return
 		}
 
+		// ===== 订阅计划配额检查 =====
+		// 查询用户的活跃订阅，获取该渠道的配额限制
+		effectiveQuotaLimit := quotaLimit // 默认使用渠道配置或全局配额
+		subscriptionTier := "free"
+
+		// 尝试从订阅计划获取渠道配额
+		activeSub, subErr := model.GetExternalUserActiveSubscription(userData.ID)
+		if subErr == nil && activeSub != nil && activeSub.IsActive {
+			subscriptionTier = activeSub.PlanTitle
+			// 解析渠道配额
+			var channelQuotas map[string]int64
+			if activeSub.ChannelQuotas != "" && activeSub.ChannelQuotas != "{}" {
+				json.Unmarshal([]byte(activeSub.ChannelQuotas), &channelQuotas)
+			}
+
+			if channelQuota, found := channelQuotas[channelId]; found {
+				if channelQuota == -1 {
+					// 该渠道无限配额
+					fmt.Printf("[ExternalUserAuth] ✓ 订阅计划 %s 该渠道无限配额，直接放行\n", subscriptionTier)
+					c.Set("external_user_id", userData.ID)
+					c.Set("external_user_email", userData.Email)
+					c.Set("external_user_vip", false)
+					c.Header("X-Quota-Status", "unlimited")
+					c.Header("X-Quota-Used", "0")
+					c.Header("X-Quota-Total", "-1")
+					c.Header("X-Quota-Remaining", "-1")
+					c.Header("X-Channel-Id", channelId)
+					c.Header("X-Subscription-Tier", subscriptionTier)
+					c.Next()
+					return
+				}
+				effectiveQuotaLimit = int(channelQuota)
+				fmt.Printf("[ExternalUserAuth] 订阅计划 %s 渠道 %s 配额: %d\n", subscriptionTier, channelId, effectiveQuotaLimit)
+			} else if activeSub.TotalAmount == 0 {
+				// 计划的全局配额无限
+				fmt.Printf("[ExternalUserAuth] ✓ 订阅计划 %s 全局无限配额，直接放行\n", subscriptionTier)
+				c.Set("external_user_id", userData.ID)
+				c.Set("external_user_email", userData.Email)
+				c.Set("external_user_vip", false)
+				c.Header("X-Quota-Status", "unlimited")
+				c.Header("X-Quota-Used", "0")
+				c.Header("X-Quota-Total", "-1")
+				c.Header("X-Quota-Remaining", "-1")
+				c.Header("X-Channel-Id", channelId)
+				c.Header("X-Subscription-Tier", subscriptionTier)
+				c.Next()
+				return
+			} else if activeSub.TotalAmount > 0 {
+				// 渠道未单独配置，使用计划的全局配额
+				effectiveQuotaLimit = int(activeSub.TotalAmount)
+				fmt.Printf("[ExternalUserAuth] 订阅计划 %s 使用全局配额: %d\n", subscriptionTier, effectiveQuotaLimit)
+			}
+		}
+
 		// 如果渠道禁用了配额，直接放行
 		if !quotaEnabled {
 			fmt.Printf("[ExternalUserAuth] ✓ 渠道 %s 禁用了配额限制，直接放行\n", channelName)
@@ -215,11 +276,11 @@ func ExternalUserAuth() gin.HandlerFunc {
 			quota.LastResetAt = time.Now().Unix()
 		}
 
-		if quota.UsedCount >= quotaLimit {
-			fmt.Printf("[ExternalUserAuth] ❌ 渠道 %s 配额已用完: %d/%d\n", channelName, quota.UsedCount, quotaLimit)
+		if quota.UsedCount >= effectiveQuotaLimit {
+			fmt.Printf("[ExternalUserAuth] ❌ 渠道 %s 配额已用完: %d/%d (tier=%s)\n", channelName, quota.UsedCount, effectiveQuotaLimit, subscriptionTier)
 			abortWithOpenAiMessage(c, http.StatusTooManyRequests,
-				fmt.Sprintf("渠道「%s」本月调用次数已用完 (%d/%d)，请升级 VIP 或切换其他渠道",
-					channelName, quota.UsedCount, quotaLimit))
+				fmt.Sprintf("渠道「%s」本月调用次数已用完 (%d/%d)，请升级订阅或切换其他渠道",
+					channelName, quota.UsedCount, effectiveQuotaLimit))
 			return
 		}
 
@@ -233,9 +294,10 @@ func ExternalUserAuth() gin.HandlerFunc {
 		c.Set("external_user_vip", false)
 		c.Header("X-Quota-Status", "active")
 		c.Header("X-Quota-Used", strconv.Itoa(quota.UsedCount))
-		c.Header("X-Quota-Total", strconv.Itoa(quotaLimit))
-		c.Header("X-Quota-Remaining", strconv.Itoa(quotaLimit-quota.UsedCount))
+		c.Header("X-Quota-Total", strconv.Itoa(effectiveQuotaLimit))
+		c.Header("X-Quota-Remaining", strconv.Itoa(effectiveQuotaLimit-quota.UsedCount))
 		c.Header("X-Channel-Id", channelId)
+		c.Header("X-Subscription-Tier", subscriptionTier)
 
 		c.Next()
 	}
@@ -457,6 +519,59 @@ func GetExternalUserQuotaInfo(userId string) (used int, total int, isVIP bool, e
 	}
 
 	return quota.UsedCount, externalUserConfig.MonthlyQuota, false, nil
+}
+
+// GetExternalUserQuotaInfoForChannel 获取外部用户在指定渠道的配额信息
+func GetExternalUserQuotaInfoForChannel(userId string, channelId string) (used int, total int, isVIP bool, tier string, err error) {
+	if !externalUserConfig.Enabled {
+		return 0, 0, false, "free", fmt.Errorf("外部用户验证未启用")
+	}
+
+	userData, err := getUserFromRedis(userId)
+	if err != nil {
+		return 0, 0, false, "free", err
+	}
+
+	isVIP = userData.IsVIP && userData.VIPExpiresAt > time.Now().Unix()
+	if isVIP || userData.Username == "admin" {
+		return 0, -1, true, "vip", nil
+	}
+
+	// 查询活跃订阅
+	activeSub, subErr := model.GetExternalUserActiveSubscription(userId)
+	effectiveQuota := externalUserConfig.MonthlyQuota
+	tier = "free"
+
+	if subErr == nil && activeSub != nil && activeSub.IsActive {
+		tier = activeSub.PlanTitle
+		var channelQuotas map[string]int64
+		if activeSub.ChannelQuotas != "" && activeSub.ChannelQuotas != "{}" {
+			json.Unmarshal([]byte(activeSub.ChannelQuotas), &channelQuotas)
+		}
+
+		if channelQuota, found := channelQuotas[channelId]; found {
+			if channelQuota == -1 {
+				return 0, -1, false, tier, nil
+			}
+			effectiveQuota = int(channelQuota)
+		} else if activeSub.TotalAmount == 0 {
+			return 0, -1, false, tier, nil
+		} else if activeSub.TotalAmount > 0 {
+			effectiveQuota = int(activeSub.TotalAmount)
+		}
+	}
+
+	quota, err := getUserChannelQuota(userId, channelId)
+	if err != nil {
+		return 0, 0, false, tier, err
+	}
+
+	currentMonthKey := time.Now().Format("2006-01")
+	if quota.MonthKey != currentMonthKey {
+		quota.UsedCount = 0
+	}
+
+	return quota.UsedCount, effectiveQuota, false, tier, nil
 }
 
 // SetUserVIP 设置用户 VIP 状态
