@@ -66,7 +66,7 @@ const SubscriptionsTable = (subscriptionsData) => {
       pagination={false}
       hidePagination={true}
       loading={loading}
-      rowKey={(row) => row?.plan?.id}
+      rowKey={(row) => row?.plan?.id || row?.id}
       empty={
         <Empty
           image={<IllustrationNoResult style={{ width: 150, height: 150 }} />}

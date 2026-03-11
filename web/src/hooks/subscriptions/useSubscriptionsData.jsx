@@ -22,6 +22,29 @@ import { useTranslation } from 'react-i18next';
 import { API, showError, showSuccess } from '../../helpers';
 import { useTableCompactMode } from '../common/useTableCompactMode';
 
+const normalizePlanRecords = (payload) => {
+  const candidates = [
+    payload?.data,
+    payload?.data?.data,
+    payload?.data?.items,
+    payload?.data?.list,
+    payload?.data?.plans,
+    payload?.items,
+    payload?.list,
+    payload?.plans,
+  ];
+
+  const list = candidates.find((item) => Array.isArray(item)) || [];
+
+  return list
+    .map((record) => {
+      if (!record) return null;
+      if (record.plan) return record;
+      return { plan: record };
+    })
+    .filter((record) => record?.plan);
+};
+
 export const useSubscriptionsData = () => {
   const { t } = useTranslation();
   const [compactMode, setCompactMode] = useTableCompactMode('subscriptions');
@@ -45,7 +68,7 @@ export const useSubscriptionsData = () => {
     try {
       const res = await API.get('/api/subscription/admin/plans');
       if (res.data?.success) {
-        const next = res.data.data || [];
+        const next = normalizePlanRecords(res.data);
         setAllPlans(next);
 
         // Keep page in range after data changes
